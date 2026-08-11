@@ -93,8 +93,17 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             observaciones = "No encontrado"
 
         # --- NUEVO: EXTRACCIÓN DEL ÉNFASIS ---
-        match_enfasis = re.search(r"ENFASIS\s*[-]?\s*([A-Z]+)", texto_limpio)
-        enfasis = match_enfasis.group(1).strip() if match_enfasis else "No especificado"
+        # --- CORRECCIÓN: EXTRACCIÓN SEGURA DEL ÉNFASIS ---
+        # Exigimos un guion (-) o dos puntos (:) obligatorios después de la palabra ÉNFASIS
+        # para evitar capturar texto plano dentro de las observaciones.
+        match_enfasis = re.search(
+            r"ENFASIS\s*[-:]\s*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE
+        )
+        enfasis = (
+            match_enfasis.group(1).strip().upper()
+            if match_enfasis
+            else "No especificado"
+        )
 
         match_limitaciones = re.search(r"OBSERVACIÓN:\s*([^\n]+)", texto_limpio)
         limitaciones = match_limitaciones.group(1).strip() if match_limitaciones else "NINGUNA"

@@ -51,7 +51,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         texto_completo = ""
         
         for pagina in doc:
-            pix = pagina.get_pixmap(dpi=300)
+            pix = pagina.get_pixmap(dpi=150)
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             texto_completo += pytesseract.image_to_string(img) + "\n"
             

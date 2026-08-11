@@ -5,11 +5,10 @@ FROM python:3.10-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Instalamos Tesseract OCR y el paquete de idioma español
+# Instalamos Tesseract OCR y el paquete de idioma español (sin paquetes gráficos obsoletos)
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-spa \
-    libgl1-mesa-glx \
     && rm -rf /var/lib/apt/lists/*
 
 # Directorio de trabajo dentro del contenedor

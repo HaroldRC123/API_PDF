@@ -7,7 +7,6 @@ import pytesseract
 from PIL import Image
 import re
 
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 app = FastAPI(title="SGSST PDF Extractor API con OCR", version="9.3")
 

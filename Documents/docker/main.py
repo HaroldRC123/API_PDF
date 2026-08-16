@@ -140,25 +140,27 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                     recom_encontradas.append(nombre_limpio)
                     
         recomendaciones_medicas = ", ".join(recom_encontradas) if recom_encontradas else "Ninguna"
-
+# Función auxiliar para pasar a minúsculas de forma segura
+        def min(val):
+          return val.lower() if isinstance(val, str) else val
         return {
             "status": "ok",
             "bytes_recibidos": len(pdf_bytes),
             "datos_extraidos": {
-                "nombre_empleado": nombre,
-                "tipo_documento": tipo_documento,
+                "nombre_empleado": min(nombre),
+                "tipo_documento": tipo_documento,  # CC o CE se suelen dejar en mayúscula, pero puedes usar min(tipo_documento) si deseas
                 "numero_documento": numero_documento,
-                "empresa_cliente": empresa,
-                "tipo_examen": tipo_examen,
+                "empresa_cliente": min(empresa),
+                "tipo_examen": min(tipo_examen),
                 "fecha_examen": fecha_examen,
-                "concepto_aptitud": concepto,
-                "observaciones": observaciones,
-                "enfasis": enfasis,               # <- Nueva variable inyectada
-                "limitaciones": limitaciones,
-                "ips_prestador": ips_prestador,
-                "pruebas_apoyo": pruebas_apoyo,
-                "recomendaciones_medicas": recomendaciones_medicas
-            }
+                "concepto_aptitud": min(concepto),
+                "observaciones": min(observaciones),
+                "enfasis": min(enfasis),
+                "limitaciones": min(limitaciones),
+                "ips_prestador": min(ips_prestador),
+                "pruebas_apoyo": min(pruebas_apoyo),
+                "recomendaciones_medicas": min(recomendaciones_medicas),
+            },
         }
         
     except HTTPException as he:

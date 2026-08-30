@@ -150,7 +150,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                 "nombre_empleado": min(nombre),
                 "tipo_documento": tipo_documento,  # CC o CE se suelen dejar en mayúscula, pero puedes usar min(tipo_documento) si deseas
                 "numero_documento": numero_documento,
-                "empresa_cliente": min(empresa),
+                ""mpresa_cliente": empresa.upper(),
                 "tipo_examen": min(tipo_examen),
                 "fecha_examen": fecha_examen,
                 "concepto_aptitud": min(concepto),

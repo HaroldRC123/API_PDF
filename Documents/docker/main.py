@@ -57,8 +57,22 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             
         texto_limpio = texto_completo.replace("|", "")
 
-        # 2. Extracciones con expresiones regulares (Actualizadas)
-        match_cedula = re.search(r"(CC|CE)[-\s]*(\d+)", texto_limpio)
+       # 2. Extracciones con expresiones regulares (Actualizadas)
+        
+        # PASO CLAVE: Aislar la sección "DATOS DEL PACIENTE" para evitar capturar la cédula del médico
+        match_seccion_paciente = re.search(
+            r"DATOS DEL PACIENTE(.*?)(?:DATOS DEL CLIENTE|DATOS DE LA ATENCIÓN|CERTIFICADO|$)", 
+            texto_limpio, 
+            re.DOTALL | re.IGNORECASE
+        )
+        texto_paciente = match_seccion_paciente.group(1) if match_seccion_paciente else texto_limpio
+
+        # Buscar la cédula estrictamente dentro del bloque exclusivo del paciente
+        match_cedula = re.search(r"(CC|CE)[-\s]*(\d+)", texto_paciente)
+        if not match_cedula:
+            # Fallback de respaldo por si el encabezado varía en algún documento
+            match_cedula = re.search(r"(CC|CE)[-\s]*(\d+)", texto_limpio)
+
         tipo_documento = match_cedula.group(1).strip() if match_cedula else "No encontrado"
         numero_documento = match_cedula.group(2).strip() if match_cedula else "No encontrado"
 

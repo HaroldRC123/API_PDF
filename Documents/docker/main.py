@@ -190,7 +190,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                 "observaciones": min_seguro(observaciones),
                 "enfasis": min_seguro(enfasis),
                 "limitaciones": min_seguro(limitaciones),
-                "ips_prestador": min_seguro(ips_prestador),
+                "ips_prestador": ips_prestador.upper(),
                 "pruebas_apoyo": min_seguro(pruebas_apoyo),
                 "recomendaciones_medicas": min_seguro(recomendaciones_medicas),
             },

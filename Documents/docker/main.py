@@ -49,7 +49,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             pagina = doc[0]
             
             # Renderizamos directamente a escala de grises a 120 DPI (equilibrio perfecto para leer 6 y 8 sin pesar demasiado)
-            pix = pagina.get_pixmap(dpi=120, colorspace=fitz.csGRAY) 
+            pix = pagina.get_pixmap(dpi=200, colorspace=fitz.csGRAY) 
             img = Image.frombytes("L", [pix.width, pix.height], pix.samples)
             
             # --- MEJORA RÁPIDA DE CONTRASTE ---

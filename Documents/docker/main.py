@@ -61,31 +61,37 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             texto_limpio = texto_crudo.replace("|", "")
         else:
             raise HTTPException(status_code=400, detail="El PDF está vacío o corrupto.")
-    # 2. Extracciones con expresiones regulares (Actualizadas y Definitivas)
+
+        # 2. Extracciones con expresiones regulares (Actualizadas y Definitivas)
         
-        # ESTRATEGIA 1: Buscar la cédula justo debajo de la "FIRMA DEL PACIENTE" (Ancla más segura)
+        # ESTRATEGIA 1 (La más segura): Buscar la cédula directamente en la sección superior "DATOS DEL PACIENTE"
         match_cedula = re.search(
-            r"FIRMA DEL PACIENTE.*?IDENTIFICACI[OÓ]N:?\s*(CC|CE)[-\.\s]*(\d+)", 
+            r"DATOS\s+DEL\s+PACIENTE.*?IDENTIFICACI[OÓ]N:?\s*(CC|CE)[-\.\s]*(\d+)", 
             texto_limpio, 
             re.DOTALL | re.IGNORECASE
         )
         
-        # ESTRATEGIA 2: Si por error del OCR no lee la firma, buscar en el encabezado superior que dice "ID: CC-..."
+        # ESTRATEGIA 2: Si por alguna razón no la encuentra arriba, buscar debajo de la "FIRMA DEL PACIENTE"
+        if not match_cedula:
+            match_cedula = re.search(
+                r"FIRMA DEL PACIENTE.*?IDENTIFICACI[OÓ]N:?\s*(CC|CE)[-\.\s]*(\d+)", 
+                texto_limpio, 
+                re.DOTALL | re.IGNORECASE
+            )
+        
+        # ESTRATEGIA 3: Buscar en el encabezado superior "ID: CC-..."
         if not match_cedula:
             match_cedula = re.search(r"ID:\s*(CC|CE)[-\.\s]*(\d+)", texto_limpio, re.IGNORECASE)
 
-        # ESTRATEGIA 3 (Fallback): Buscar todas y excluir explícitamente las cédulas de los doctores conocidos
+        # ESTRATEGIA 4 (Fallback general por si fallan las anteriores)
         if match_cedula:
             tipo_documento = match_cedula.group(1).strip().upper()
             numero_documento = match_cedula.group(2).strip()
         else:
-            # Captura todas las identificaciones del documento
             todas_cedulas = re.findall(r"(CC|CE)[-\.\s]*(\d+)", texto_limpio, re.IGNORECASE)
-            # Lista negra: Cédulas de los doctores (Charles Darwin Diaz y Sandra Marina Morantes)
-            cedulas_doctores = ["1013609058", "46672834"] 
+            cedulas_doctores = ["1013609058", "46672834", "46072854"] # Incluimos la variante con error por seguridad
             
-            # Filtra descartando las cédulas de los médicos
-            cedulas_validas = [c for c in todas_cedulas if c[1] not in cedulas_doctores]
+            cedulas_validas = [c for c in todas_cedulas if c[1] not in cedulas_doctores and len(c[1]) > 6]
             
             if cedulas_validas:
                 tipo_documento = cedulas_validas[0][0].strip().upper()

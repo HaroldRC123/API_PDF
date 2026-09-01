@@ -46,25 +46,29 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-# 1. Abrir el PDF y procesar la única página escaneada con velocidad y contraste optimizados
+# 1. Abrir el PDF y procesar la única página con optimización de velocidad extrema
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         if len(doc) > 0:
             pagina = doc[0]
             
-            # Renderizamos a 150 DPI (equilibrio ideal)
+            # Renderizamos a 150 DPI
             pix = pagina.get_pixmap(dpi=150) 
             
-            # Convertimos a escala de grises y aplicamos un filtro de umbral (threshold) 
-            # para dejar el fondo blanco puro y las letras/números en negro puro. 
-            # Esto acelera a Tesseract a la mitad del tiempo y afila los dígitos de las cédulas.
+            # Convertimos a escala de grises
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert('L')
             
-            # Ajuste de contraste automático simple para resaltar los números borrosos
+            # --- NUEVO: REDUCIR 20% EL TAMAÑO PARA ACELERAR EL OCR A LA MITAD ---
+            # Mantiene la nitidez para los números pero reduce drásticamente los píxeles a procesar
+            nuevo_ancho = int(img.width * 0.8)
+            nuevo_alto = int(img.height * 0.8)
+            img = img.resize((nuevo_ancho, nuevo_alto), Image.Resampling.LANCZOS)
+            
+            # Filtro de contraste binario (Blanco y negro puro)
             threshold = 160
             img = img.point(lambda p: 255 if p > threshold else 0)
             
-            # Configuración optimizada para bloques de texto de formularios (--psm 6)
+            # Configuración optimizada de Tesseract para formularios (--psm 6)
             custom_config = r'--oem 3 --psm 6'
             
             texto_crudo = pytesseract.image_to_string(img, config=custom_config)

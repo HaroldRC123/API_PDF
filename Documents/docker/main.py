@@ -183,7 +183,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                 "nombre_empleado": min_seguro(nombre),
                 "tipo_documento": tipo_documento,
                 "numero_documento": numero_documento,
-                "mpresa_cliente": empresa.upper(),
+                "empresa_cliente": empresa.upper(),
                 "tipo_examen": min_seguro(tipo_examen),
                 "fecha_examen": fecha_examen,
                 "concepto_aptitud": min_seguro(concepto),

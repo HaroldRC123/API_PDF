@@ -132,12 +132,19 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         else:
             observaciones = "No encontrado"
 
-        # --- CORREGIDO: Énfasis (Busca en el título principal "CON ÉNFASIS EN ...") ---
-        match_enfasis = re.search(r"ÉNFASIS\s+EN\s+([A-ZÁÉÍÓÚ]+)|ENFASIS\s+EN\s+([A-ZÁÉÍÓÚ]+)|[ÉÉ]NFASIS\s*[-:]\s*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
-        if match_enfasis:
-            enfasis = (match_enfasis.group(1) or match_enfasis.group(2) or match_enfasis.group(3)).strip().upper()
+       # --- EXTRACCIÓN BLINDADA DEL ÉNFASIS ---
+        match_enfasis = re.search(r"(?:É|E)NFASIS(?:\s+EN)?\s*[-:]?\s*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
+        
+        if match_enfasis and match_enfasis.group(1).upper() != "EN":
+            enfasis = match_enfasis.group(1).strip().upper()
         else:
+            # Fallback inteligente: Busca directamente los énfasis médicos comunes en todo el texto
+            posibles_enfasis = ["OSTEOMUSCULAR", "VISUAL", "VOZ", "ALTURAS", "NEUROLOGICO", "AUDITIVO"]
             enfasis = "No especificado"
+            for item in posibles_enfasis:
+                if item in texto_limpio.upper():
+                    enfasis = item
+                    break
 
         # Limitaciones
         match_limitaciones = re.search(r"OBSERVACIÓN:\s*([^\n]+)", texto_limpio)

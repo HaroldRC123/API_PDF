@@ -4,10 +4,8 @@ import traceback
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 import fitz    # PyMuPDF
 import pytesseract
-from PIL import Image, ImageEnhance  # <-- SE IMPORTA AQUÍ ARRIBA
+from PIL import Image, ImageEnhance
 import re
-
-
 
 app = FastAPI(title="SGSST PDF Extractor API con OCR", version="9.3")
 
@@ -47,8 +45,6 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-from PIL import ImageEnhance
-
         # 1. Abrir el PDF y procesar la única página con alta definición de caracteres numéricos
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
@@ -76,10 +72,8 @@ from PIL import ImageEnhance
             texto_limpio = texto_crudo.replace("|", "")
         else:
             raise HTTPException(status_code=400, detail="El PDF está vacío o corrupto.")
-        # 2. Extracciones con expresiones regulares (Actualizadas y Definitivas)
-        
-# ESTRATEGIA 1: Buscar la cédula en "DATOS DEL PACIENTE"
-# 2. Extracciones con expresiones regulares (Blindadas y Definitivas)
+
+        # 2. Extracciones con expresiones regulares (Blindadas y Definitivas)
         
         # ESTRATEGIA 1: Buscar la cédula estrictamente en la sección superior "DATOS DEL PACIENTE"
         match_cedula = re.search(
@@ -134,7 +128,7 @@ from PIL import ImageEnhance
         match_concepto = re.search(r"CONCEPTO[^:]*:\s*([^\n]+)", texto_limpio)
         concepto = match_concepto.group(1).strip() if match_concepto else "No encontrado"
 
-        # --- CORREGIDO: Observaciones (Soporta ENFASIS con o sin tilde) ---
+        # Observaciones
         match_observaciones = re.search(r"OBSERVACIONES AL CONCEPTO:\s*(.*?)(?=ENFASIS|ÉNFASIS|RECOMENDACIONES|LIMITACIONES|TIPO LIMITACI[OÓ]N|> GENERALES|$)", texto_limpio, re.DOTALL | re.IGNORECASE)
         if match_observaciones:
             observaciones = match_observaciones.group(1).replace('\n', ' ').strip()
@@ -142,13 +136,12 @@ from PIL import ImageEnhance
         else:
             observaciones = "No encontrado"
 
-       # --- EXTRACCIÓN BLINDADA DEL ÉNFASIS ---
+        # Énfasis
         match_enfasis = re.search(r"(?:É|E)NFASIS(?:\s+EN)?\s*[-:]?\s*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
         
         if match_enfasis and match_enfasis.group(1).upper() != "EN":
             enfasis = match_enfasis.group(1).strip().upper()
         else:
-            # Fallback inteligente: Busca directamente los énfasis médicos comunes en todo el texto
             posibles_enfasis = ["OSTEOMUSCULAR", "VISUAL", "VOZ", "ALTURAS", "NEUROLOGICO", "AUDITIVO"]
             enfasis = "No especificado"
             for item in posibles_enfasis:
@@ -157,7 +150,7 @@ from PIL import ImageEnhance
                     break
 
         # Limitaciones
-        match_limitaciones = re.search(r"OBSERVACIÓN:\s*([^\n]+)", texto_limpio)
+        match_limitaciones = re.search(r"OBSERVACIÓN:\s*([^\n]+)", texto_ln := texto_limpio) # Sencillo y directo
         limitaciones = match_limitaciones.group(1).strip() if match_limitaciones else "NINGUNA"
 
         # IPS Prestador
@@ -193,26 +186,28 @@ from PIL import ImageEnhance
                     recom_encontradas.append(nombre_limpio)
                     
         recomendaciones_medicas = ", ".join(recom_encontradas) if recom_encontradas else "Ninguna"
-# Función auxiliar para pasar a minúsculas de forma segura
-        def min(val):
-          return val.lower() if isinstance(val, str) else val
+
+        # Función auxiliar para pasar a minúsculas de forma segura
+        def min_seguro(val):
+            return val.lower() if isinstance(val, str) else val
+
         return {
             "status": "ok",
             "bytes_recibidos": len(pdf_bytes),
             "datos_extraidos": {
-                "nombre_empleado": min(nombre),
-                "tipo_documento": tipo_documento,  # CC o CE se suelen dejar en mayúscula, pero puedes usar min(tipo_documento) si deseas
+                "nombre_empleado": min_seguro(nombre),
+                "tipo_documento": tipo_documento,
                 "numero_documento": numero_documento,
                 "mpresa_cliente": empresa.upper(),
-                "tipo_examen": min(tipo_examen),
+                "tipo_examen": min_seguro(tipo_examen),
                 "fecha_examen": fecha_examen,
-                "concepto_aptitud": min(concepto),
-                "observaciones": min(observaciones),
-                "enfasis": min(enfasis),
-                "limitaciones": min(limitaciones),
-                "ips_prestador": min(ips_prestador),
-                "pruebas_apoyo": min(pruebas_apoyo),
-                "recomendaciones_medicas": min(recomendaciones_medicas),
+                "concepto_aptitud": min_seguro(concepto),
+                "observaciones": min_seguro(observaciones),
+                "enfasis": min_seguro(enfasis),
+                "limitaciones": min_seguro(limitaciones),
+                "ips_prestador": min_seguro(ips_prestador),
+                "pruebas_apoyo": min_seguro(pruebas_apoyo),
+                "recomendaciones_medicas": min_seguro(recomendaciones_medicas),
             },
         }
         
@@ -226,4 +221,4 @@ from PIL import ImageEnhance
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Extractor OCR final activo v9.3"}    
+    return {"status": "online", "system": "Extractor OCR final activo v9.3"}

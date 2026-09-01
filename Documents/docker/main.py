@@ -46,26 +46,26 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-# 1. Abrir el PDF y procesar la única página con optimización de velocidad extrema
+# 1. Abrir el PDF y procesar la única página con velocidad máxima anti-timeout
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         if len(doc) > 0:
             pagina = doc[0]
             
-            # Renderizamos a 150 DPI
-            pix = pagina.get_pixmap(dpi=150) 
+            # Bajamos a 90 DPI para aligerar el peso de entrada
+            pix = pagina.get_pixmap(dpi=90) 
             
             # Convertimos a escala de grises
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert('L')
             
-            # --- NUEVO: REDUCIR 20% EL TAMAÑO PARA ACELERAR EL OCR A LA MITAD ---
-            # Mantiene la nitidez para los números pero reduce drásticamente los píxeles a procesar
-            nuevo_ancho = int(img.width * 0.8)
-            nuevo_alto = int(img.height * 0.8)
-            img = img.resize((nuevo_ancho, nuevo_alto), Image.Resampling.LANCZOS)
+            # --- REDUCCIÓN AGRESIVA AL 50% ---
+            # Reduce drásticamente la cantidad de píxeles que procesa Tesseract, bajando el tiempo a la tercera parte
+            nuevo_ancho = int(img.width * 0.5)
+            nuevo_alto = int(img.height * 0.5)
+            img = img.resize((nuevo_ancho, nuevo_alto), Image.Resampling.BILINEAR)
             
-            # Filtro de contraste binario (Blanco y negro puro)
-            threshold = 160
+            # Filtro de contraste binario (Blanco y negro puro para perfilar las cédulas)
+            threshold = 150
             img = img.point(lambda p: 255 if p > threshold else 0)
             
             # Configuración optimizada de Tesseract para formularios (--psm 6)

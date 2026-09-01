@@ -46,18 +46,22 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-# 1. Abrir el PDF y procesar la única página escaneada directamente con OCR
+# 1. Abrir el PDF y procesar la única página escaneada con alta precisión
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         if len(doc) > 0:
             pagina = doc[0]
             
-            # Renderizamos a 100 DPI (Súper rápido y ligero para Render)
-            pix = pagina.get_pixmap(dpi=100) 
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            # Renderizamos a 200 DPI para que los números y cédulas salgan perfectamente nítidos
+            pix = pagina.get_pixmap(dpi=200) 
             
-            # Ejecutamos el OCR y limpiamos el resultado
-            texto_crudo = pytesseract.image_to_string(img)
+            # Convertimos a escala de grises ('L') para que Tesseract procese más rápido y con mayor precisión
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert('L')
+            
+            # Configuración avanzada de Tesseract para optimizar la lectura de formularios y números (--psm 6)
+            custom_config = r'--oem 3 --psm 6'
+            
+            texto_crudo = pytesseract.image_to_string(img, config=custom_config)
             texto_limpio = texto_crudo.replace("|", "")
         else:
             raise HTTPException(status_code=400, detail="El PDF está vacío o corrupto.")

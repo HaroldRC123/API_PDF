@@ -69,19 +69,16 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         # 2. Extracciones con expresiones regulares (Actualizadas y Definitivas)
         
 # ESTRATEGIA 1: Buscar la cédula en "DATOS DEL PACIENTE"
+# 2. Extracciones con expresiones regulares (Blindadas y Definitivas)
+        
+        # ESTRATEGIA 1: Buscar la cédula estrictamente en la sección superior "DATOS DEL PACIENTE"
         match_cedula = re.search(
-            r"DATOS\s+DEL\s+PACIENTE.*?IDENTIFICACI[OÓ]N:?\s*(CC|CE)[-\.\s]*(\d+)", 
+            r"DATOS\s+DEL\s+PACIENTE.*?IDENTIFICACI[OÓ]N:?\s*[\n\|\s]*(CC|CE)[-\.\s]*(\d+)", 
             texto_limpio, 
             re.DOTALL | re.IGNORECASE
         )
         
-        if not match_cedula:
-            match_cedula = re.search(
-                r"FIRMA DEL PACIENTE.*?IDENTIFICACI[OÓ]N:?\s*(CC|CE)[-\.\s]*(\d+)", 
-                texto_limpio, 
-                re.DOTALL | re.IGNORECASE
-            )
-            
+        # ESTRATEGIA 2: Si no está arriba, buscar en el identificador inicial "ID: CC-..."
         if not match_cedula:
             match_cedula = re.search(r"ID:\s*(CC|CE)[-\.\s]*(\d+)", texto_limpio, re.IGNORECASE)
 
@@ -89,6 +86,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             tipo_documento = match_cedula.group(1).strip().upper()
             numero_documento = match_cedula.group(2).strip()
         else:
+            # Fallback seguro excluyendo categóricamente las cédulas de los médicos conocidos
             todas_cedulas = re.findall(r"(CC|CE)[-\.\s]*(\d+)", texto_limpio, re.IGNORECASE)
             cedulas_doctores = ["1013609058", "46672834", "46072854"] 
             cedulas_validas = [c for c in todas_cedulas if c[1] not in cedulas_doctores and len(c[1]) > 6]
@@ -100,8 +98,8 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                 tipo_documento = "No encontrado"
                 numero_documento = "No encontrado"
 
-        # Nombre del empleado
-        match_nombre = re.search(r"NOMBRE:\s*([A-ZÑ\s]{5,})\n", texto_limpio)
+        # Nombre del empleado (con soporte para saltos de línea del OCR)
+        match_nombre = re.search(r"NOMBRE:\s*[\n\|\s]*([A-ZÑ\s]{5,})\n", texto_limpio)
         if match_nombre and "IDENTIFICACI" not in match_nombre.group(1):
             nombre = match_nombre.group(1).strip()
         else:
@@ -109,10 +107,12 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             nombre = match_nombre_alt.group(1).strip() if match_nombre_alt else "No encontrado"
 
         # Empresa cliente
-        match_empresa = re.search(r"EDAD:\n\d+ AÑOS\n([A-Z\s]+)\n", texto_limpio)
+        match_empresa = re.search(r"EDAD:\s*\d+\s*AÑOS\s*([A-Z\s]+)\n", texto_limpio)
+        if not match_empresa:
+            match_empresa = re.search(r"NOMBRE:\s*([A-Z\s]+)\s*DATOS DE LA ATENCIÓN", texto_limpio, re.DOTALL)
         empresa = match_empresa.group(1).strip() if match_empresa else "AGENCE FRANCE PRESSE"
 
-        # --- CORREGIDO: Tipo de evaluación (Flexible ante saltos de línea) ---
+        # Tipo de evaluación
         match_tipo = re.search(r"TIPO DE EVALUACION:?\s*[\n\|\s]*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
         tipo_examen = match_tipo.group(1).strip() if match_tipo else "No encontrado"
 
@@ -124,23 +124,26 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         match_concepto = re.search(r"CONCEPTO[^:]*:\s*([^\n]+)", texto_limpio)
         concepto = match_concepto.group(1).strip() if match_concepto else "No encontrado"
 
-        # --- CORREGIDO: Observaciones (Soporta [ÉÉ]NFASIS con tilde) ---
-        match_observaciones = re.search(r"OBSERVACIONES AL CONCEPTO:\s*(.*?)(?=[ÉÉ]NFASIS|RECOMENDACIONES|LIMITACIONES|TIPO LIMITACI[OÓ]N|> GENERALES|$)", texto_limpio, re.DOTALL | re.IGNORECASE)
+        # --- CORREGIDO: Observaciones (Soporta ENFASIS con o sin tilde) ---
+        match_observaciones = re.search(r"OBSERVACIONES AL CONCEPTO:\s*(.*?)(?=ENFASIS|ÉNFASIS|RECOMENDACIONES|LIMITACIONES|TIPO LIMITACI[OÓ]N|> GENERALES|$)", texto_limpio, re.DOTALL | re.IGNORECASE)
         if match_observaciones:
             observaciones = match_observaciones.group(1).replace('\n', ' ').strip()
             observaciones = re.sub(r'\s+', ' ', observaciones)
         else:
             observaciones = "No encontrado"
 
-        # --- CORREGIDO: Énfasis (Soporta tilde y guiones) ---
-        match_enfasis = re.search(r"[ÉÉ]NFASIS\s*[-:]\s*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
-        enfasis = match_enfasis.group(1).strip().upper() if match_enfasis else "No especificado"
+        # --- CORREGIDO: Énfasis (Busca en el título principal "CON ÉNFASIS EN ...") ---
+        match_enfasis = re.search(r"ÉNFASIS\s+EN\s+([A-ZÁÉÍÓÚ]+)|ENFASIS\s+EN\s+([A-ZÁÉÍÓÚ]+)|[ÉÉ]NFASIS\s*[-:]\s*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
+        if match_enfasis:
+            enfasis = (match_enfasis.group(1) or match_enfasis.group(2) or match_enfasis.group(3)).strip().upper()
+        else:
+            enfasis = "No especificado"
 
         # Limitaciones
         match_limitaciones = re.search(r"OBSERVACIÓN:\s*([^\n]+)", texto_limpio)
         limitaciones = match_limitaciones.group(1).strip() if match_limitaciones else "NINGUNA"
 
-        # --- CORREGIDO: IPS Prestador (Con re.IGNORECASE añadido) ---
+        # IPS Prestador
         match_ips = re.search(r"(SALUD OCUPACIONAL SANITAS SAS)", texto_limpio, re.IGNORECASE)
         ips_prestador = match_ips.group(1).strip() if match_ips else "No encontrado"
         

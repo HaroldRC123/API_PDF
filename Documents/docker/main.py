@@ -46,29 +46,20 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-# 1. Abrir el PDF y procesar la única página con velocidad máxima anti-timeout
+# 1. Abrir el PDF y procesar la única página con el equilibrio ideal de velocidad y nitidez
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         if len(doc) > 0:
             pagina = doc[0]
             
-            # Bajamos a 90 DPI para aligerar el peso de entrada
-            pix = pagina.get_pixmap(dpi=90) 
+            # Renderizamos a 120 DPI (Suficiente calidad para leer cédulas y textos sin sobrecargar el servidor)
+            pix = pagina.get_pixmap(dpi=120) 
             
-            # Convertimos a escala de grises
+            # Convertimos directamente a escala de grises ('L')
+            # Tesseract procesa muy rápido las escalas de grises usando su propio motor interno de binarización
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert('L')
             
-            # --- REDUCCIÓN AGRESIVA AL 50% ---
-            # Reduce drásticamente la cantidad de píxeles que procesa Tesseract, bajando el tiempo a la tercera parte
-            nuevo_ancho = int(img.width * 0.5)
-            nuevo_alto = int(img.height * 0.5)
-            img = img.resize((nuevo_ancho, nuevo_alto), Image.Resampling.BILINEAR)
-            
-            # Filtro de contraste binario (Blanco y negro puro para perfilar las cédulas)
-            threshold = 150
-            img = img.point(lambda p: 255 if p > threshold else 0)
-            
-            # Configuración optimizada de Tesseract para formularios (--psm 6)
+            # Configuración optimizada de Tesseract para bloques de formularios (--psm 6)
             custom_config = r'--oem 3 --psm 6'
             
             texto_crudo = pytesseract.image_to_string(img, config=custom_config)

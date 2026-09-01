@@ -52,10 +52,13 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if len(doc) > 0:
             pagina = doc[0]
             
-            # Renderizamos a 100 DPI (Equilibrio perfecto entre velocidad y precisión para Tesseract)
+            # Renderizamos a 100 DPI (Súper rápido y ligero para Render)
             pix = pagina.get_pixmap(dpi=100) 
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            texto_limpio = texto_limpio.replace("|", "")
+            
+            # Ejecutamos el OCR y limpiamos el resultado
+            texto_crudo = pytesseract.image_to_string(img)
+            texto_limpio = texto_crudo.replace("|", "")
         else:
             raise HTTPException(status_code=400, detail="El PDF está vacío o corrupto.")
     # 2. Extracciones con expresiones regulares (Actualizadas y Definitivas)

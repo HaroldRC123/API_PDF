@@ -6,6 +6,7 @@ import fitz    # PyMuPDF
 import pytesseract
 from PIL import Image
 import re
+from PIL import ImageEnhance
 
 
 app = FastAPI(title="SGSST PDF Extractor API con OCR", version="9.3")
@@ -46,20 +47,29 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-# 1. Abrir el PDF y procesar la única página con el equilibrio ideal de velocidad y nitidez
+from PIL import ImageEnhance
+
+        # 1. Abrir el PDF y procesar la única página con alta definición de caracteres numéricos
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         if len(doc) > 0:
             pagina = doc[0]
             
-            # Renderizamos a 120 DPI (Suficiente calidad para leer cédulas y textos sin sobrecargar el servidor)
-            pix = pagina.get_pixmap(dpi=120) 
+            # Subimos ligeramente a 130 DPI para tener la definición perfecta en los dígitos
+            pix = pagina.get_pixmap(dpi=130) 
             
-            # Convertimos directamente a escala de grises ('L')
-            # Tesseract procesa muy rápido las escalas de grises usando su propio motor interno de binarización
+            # Convertimos a escala de grises
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert('L')
             
-            # Configuración optimizada de Tesseract para bloques de formularios (--psm 6)
+            # --- MEJORA INTELIGENTE DE NÚMEROS (CONTRASTE Y NITIDEZ) ---
+            # Esto afila los bordes y evita que los lazos del 6 y el 8 se fusionen o se cierren
+            enhancer_contrast = ImageEnhance.Contrast(img)
+            img = enhancer_contrast.enhance(1.8) # Aumenta el contraste de los trazos
+            
+            enhancer_sharpness = ImageEnhance.Sharpness(img)
+            img = enhancer_sharpness.enhance(2.0) # Perfila las líneas para distinguir claramente las curvas
+            
+            # Configuración optimizada de Tesseract para formularios (--psm 6)
             custom_config = r'--oem 3 --psm 6'
             
             texto_crudo = pytesseract.image_to_string(img, config=custom_config)

@@ -4,9 +4,9 @@ import traceback
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 import fitz    # PyMuPDF
 import pytesseract
-from PIL import Image
+from PIL import Image, ImageEnhance  # <-- SE IMPORTA AQUÍ ARRIBA
 import re
-from PIL import ImageEnhance
+
 
 
 app = FastAPI(title="SGSST PDF Extractor API con OCR", version="9.3")

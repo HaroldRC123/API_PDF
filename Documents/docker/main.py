@@ -75,32 +75,24 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
         # 2. Extracciones con expresiones regulares (Blindadas y Definitivas)
         
-        # ESTRATEGIA 1: Buscar la cédula estrictamente en la sección superior "DATOS DEL PACIENTE"
-        match_cedula = re.search(
-            r"DATOS\s+DEL\s+PACIENTE.*?IDENTIFICACI[OÓ]N:?\s*[\n\|\s]*(CC|CE)[-\.\s]*(\d+)", 
-            texto_limpio, 
-            re.DOTALL | re.IGNORECASE
-        )
+        # ESTRATEGIA DEFINITIVA PARA LA CÉDULA:
+        # Extraer todas las cédulas del documento y filtrar las de los médicos conocidos.
+        # Como el paciente aparece al inicio y los médicos al final, la primera cédula válida es la del paciente.
+        todas_cedulas = re.findall(r"(CC|CE)[-\.\s]*(\d+)", texto_limpio, re.IGNORECASE)
+        cedulas_doctores = ["1013609058", "46672834", "46072854", "4607285", "101360905"] 
         
-        # ESTRATEGIA 2: Si no está arriba, buscar en el identificador inicial "ID: CC-..."
-        if not match_cedula:
-            match_cedula = re.search(r"ID:\s*(CC|CE)[-\.\s]*(\d+)", texto_limpio, re.IGNORECASE)
-
-        if match_cedula:
-            tipo_documento = match_cedula.group(1).strip().upper()
-            numero_documento = match_cedula.group(2).strip()
+        cedulas_validas = []
+        for tipo, num in todas_cedulas:
+            num_limpio = num.strip()
+            if num_limpio not in cedulas_doctores and len(num_limpio) > 6:
+                cedulas_validas.append((tipo.strip().upper(), num_limpio))
+        
+        if cedulas_validas:
+            tipo_documento = cedulas_validas[0][0]
+            numero_documento = cedulas_validas[0][1]
         else:
-            # Fallback seguro excluyendo categóricamente las cédulas de los médicos conocidos
-            todas_cedulas = re.findall(r"(CC|CE)[-\.\s]*(\d+)", texto_limpio, re.IGNORECASE)
-            cedulas_doctores = ["1013609058", "46672834", "46072854"] 
-            cedulas_validas = [c for c in todas_cedulas if c[1] not in cedulas_doctores and len(c[1]) > 6]
-            
-            if cedulas_validas:
-                tipo_documento = cedulas_validas[0][0].strip().upper()
-                numero_documento = cedulas_validas[0][1].strip()
-            else:
-                tipo_documento = "No encontrado"
-                numero_documento = "No encontrado"
+            tipo_documento = "No encontrado"
+            numero_documento = "No encontrado"
 
         # Nombre del empleado (con soporte para saltos de línea del OCR)
         match_nombre = re.search(r"NOMBRE:\s*[\n\|\s]*([A-ZÑ\s]{5,})\n", texto_limpio)
@@ -136,7 +128,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         else:
             observaciones = "No encontrado"
 
-        # Énfasis
+        # Énfasis (Con limpieza automática de prefijos como "EN")
         match_enfasis = re.search(r"(?:É|E)NFASIS(?:\s+EN)?\s*[-:]?\s*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
         
         if match_enfasis and match_enfasis.group(1).upper() != "EN":
@@ -148,7 +140,12 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                 if item in texto_limpio.upper():
                     enfasis = item
                     break
-
+        
+        # Limpieza por si extrae "EN OSTEOMUSCULAR"
+        if enfasis.startswith("EN "):
+            enfasis = enfasis[3:]
+        elif enfasis.startswith("EN"):
+            enfasis = enfasis[2:]
         # Limitaciones
         match_limitaciones = re.search(r"OBSERVACIÓN:\s*([^\n]+)", texto_ln := texto_limpio) # Sencillo y directo
         limitaciones = match_limitaciones.group(1).strip() if match_limitaciones else "NINGUNA"

@@ -52,8 +52,8 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if len(doc) > 0:
             pagina = doc[0]
             
-            # Renderizamos a 200 DPI para que los números y cédulas salgan perfectamente nítidos
-            pix = pagina.get_pixmap(dpi=200) 
+            # Renderizamos a 150 DPI para que los números y cédulas salgan perfectamente nítidos
+            pix = pagina.get_pixmap(dpi=150) 
             
             # Convertimos a escala de grises ('L') para que Tesseract procese más rápido y con mayor precisión
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert('L')

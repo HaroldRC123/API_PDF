@@ -46,17 +46,21 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-        # 1. Leer el archivo y renderizar imágenes a 300 DPI con PyMuPDF (en memoria)
+# 1. Abrir el PDF y procesar la única página escaneada directamente con OCR
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        texto_completo = ""
         
-        for pagina in doc:
-            pix = pagina.get_pixmap(dpi=150)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            texto_completo += pytesseract.image_to_string(img) + "\n"
+        if len(doc) > 0:
+            pagina = doc[0]
             
-        texto_limpio = texto_completo.replace("|", "")
-
+            # Renderizamos a 150 DPI (Equilibrio perfecto entre velocidad y precisión para Tesseract)
+            pix = pagina.get_pixmap(dpi=150) 
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # Ejecución directa del OCR
+            texto_limpio = pytesseract.image_to_string(img)
+            texto_limpio = texto_limpio.replace("|", "")
+        else:
+            raise HTTPException(status_code=400, detail="El PDF está vacío o corrupto.")
     # 2. Extracciones con expresiones regulares (Actualizadas y Definitivas)
         
         # ESTRATEGIA 1: Buscar la cédula justo debajo de la "FIRMA DEL PACIENTE" (Ancla más segura)

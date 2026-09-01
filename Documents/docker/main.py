@@ -1,3 +1,7 @@
+import os
+# CRUCIAL: Evita que Tesseract sature la CPU gratuita de Render intentando usar multi-hilos
+os.environ["OMP_THREAD_LIMIT"] = "1"
+
 import base64
 import json
 import traceback
@@ -7,37 +11,30 @@ import pytesseract
 from PIL import Image, ImageEnhance
 import re
 
-app = FastAPI(title="SGSST PDF Extractor API con OCR", version="9.3")
+app = FastAPI(title="SGSST PDF Extractor API con OCR", version="9.4")
 
 @app.post("/api/procesar-examen/")
 async def procesar_examen(request: Request, file: UploadFile = None):
     try:
         pdf_bytes = None
 
-        # OPCIÓN 1: Si se envía como Form-Data / UploadFile (Recomendado para Power Automate)
         if file is not None:
             pdf_bytes = await file.read()
             print("Archivo recibido por Form-Data (UploadFile).")
-
         else:
-            # Obtenemos el cuerpo crudo de la solicitud como bytes
             body_bytes = await request.body()
-            
             if not body_bytes or len(body_bytes) == 0:
                 raise HTTPException(status_code=400, detail="El cuerpo de la solicitud llegó vacío.")
             
-            # OPCIÓN 2: Intentar interpretar el cuerpo como un JSON de Power Automate {"$content": "..."}
             try:
                 body_json = json.loads(body_bytes.decode('utf-8'))
                 if isinstance(body_json, dict):
                     file_content_base64 = body_json.get("$content") or body_json.get("content")
                     if file_content_base64:
                         pdf_bytes = base64.b64decode(file_content_base64)
-                        print("Formato JSON con Base64 detectado y decodificado correctamente.")
             except Exception:
                 pass
                 
-            # OPCIÓN 3: Si no vino en JSON ni Form-Data, asumimos binario puro
             if pdf_bytes is None:
                 pdf_bytes = body_bytes
                 print("Archivo binario directo detectado.")
@@ -45,27 +42,22 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-        # 1. Abrir el PDF y procesar la única página con alta definición de caracteres numéricos
+        # 1. Abrir el PDF y procesar la única página directamente en escala de grises
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         if len(doc) > 0:
             pagina = doc[0]
             
-            # Subimos ligeramente a 130 DPI para tener la definición perfecta en los dígitos
-            pix = pagina.get_pixmap(dpi=130) 
+            # Renderizamos directamente a escala de grises a 120 DPI (equilibrio perfecto para leer 6 y 8 sin pesar demasiado)
+            pix = pagina.get_pixmap(dpi=120, colorspace=fitz.csGRAY) 
+            img = Image.frombytes("L", [pix.width, pix.height], pix.samples)
             
-            # Convertimos a escala de grises
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert('L')
+            # --- MEJORA RÁPIDA DE CONTRASTE ---
+            # Realce optimizado para afilar los trazos de los números sin sobrecargar el script
+            enhancer = ImageEnhance.Contrast(img)
+            img = enhancer.enhance(1.5)
             
-            # --- MEJORA INTELIGENTE DE NÚMEROS (CONTRASTE Y NITIDEZ) ---
-            # Esto afila los bordes y evita que los lazos del 6 y el 8 se fusionen o se cierren
-            enhancer_contrast = ImageEnhance.Contrast(img)
-            img = enhancer_contrast.enhance(1.8) # Aumenta el contraste de los trazos
-            
-            enhancer_sharpness = ImageEnhance.Sharpness(img)
-            img = enhancer_sharpness.enhance(2.0) # Perfila las líneas para distinguir claramente las curvas
-            
-            # Configuración optimizada de Tesseract para formularios (--psm 6)
+            # Configuración optimizada de Tesseract (--psm 6 para bloques de formularios)
             custom_config = r'--oem 3 --psm 6'
             
             texto_crudo = pytesseract.image_to_string(img, config=custom_config)
@@ -75,9 +67,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
         # 2. Extracciones con expresiones regulares (Blindadas y Definitivas)
         
-        # ESTRATEGIA DEFINITIVA PARA LA CÉDULA:
-        # Extraer todas las cédulas del documento y filtrar las de los médicos conocidos.
-        # Como el paciente aparece al inicio y los médicos al final, la primera cédula válida es la del paciente.
+        # Extracción segura de la cédula del paciente (excluyendo médicos)
         todas_cedulas = re.findall(r"(CC|CE)[-\.\s]*(\d+)", texto_limpio, re.IGNORECASE)
         cedulas_doctores = ["1013609058", "46672834", "46072854", "4607285", "101360905"] 
         
@@ -94,7 +84,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             tipo_documento = "No encontrado"
             numero_documento = "No encontrado"
 
-        # Nombre del empleado (con soporte para saltos de línea del OCR)
+        # Nombre del empleado
         match_nombre = re.search(r"NOMBRE:\s*[\n\|\s]*([A-ZÑ\s]{5,})\n", texto_limpio)
         if match_nombre and "IDENTIFICACI" not in match_nombre.group(1):
             nombre = match_nombre.group(1).strip()
@@ -128,9 +118,8 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         else:
             observaciones = "No encontrado"
 
-        # Énfasis (Con limpieza automática de prefijos como "EN")
+        # Énfasis
         match_enfasis = re.search(r"(?:É|E)NFASIS(?:\s+EN)?\s*[-:]?\s*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
-        
         if match_enfasis and match_enfasis.group(1).upper() != "EN":
             enfasis = match_enfasis.group(1).strip().upper()
         else:
@@ -141,13 +130,13 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                     enfasis = item
                     break
         
-        # Limpieza por si extrae "EN OSTEOMUSCULAR"
         if enfasis.startswith("EN "):
             enfasis = enfasis[3:]
         elif enfasis.startswith("EN"):
             enfasis = enfasis[2:]
+
         # Limitaciones
-        match_limitaciones = re.search(r"OBSERVACIÓN:\s*([^\n]+)", texto_ln := texto_limpio) # Sencillo y directo
+        match_limitaciones = re.search(r"OBSERVACIÓN:\s*([^\n]+)", texto_limpio)
         limitaciones = match_limitaciones.group(1).strip() if match_limitaciones else "NINGUNA"
 
         # IPS Prestador
@@ -184,7 +173,6 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                     
         recomendaciones_medicas = ", ".join(recom_encontradas) if recom_encontradas else "Ninguna"
 
-        # Función auxiliar para pasar a minúsculas de forma segura
         def min_seguro(val):
             return val.lower() if isinstance(val, str) else val
 
@@ -195,7 +183,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                 "nombre_empleado": min_seguro(nombre),
                 "tipo_documento": tipo_documento,
                 "numero_documento": numero_documento,
-                "empresa_cliente": empresa.upper(),
+                "mpresa_cliente": empresa.upper(),
                 "tipo_examen": min_seguro(tipo_examen),
                 "fecha_examen": fecha_examen,
                 "concepto_aptitud": min_seguro(concepto),
@@ -218,4 +206,4 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Extractor OCR final activo v9.3"}
+    return {"status": "online", "system": "Extractor OCR final activo v9.4"}

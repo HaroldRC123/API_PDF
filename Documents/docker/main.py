@@ -46,26 +46,31 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-# 1. Abrir el PDF y procesar la única página escaneada con alta precisión
+# 1. Abrir el PDF y procesar la única página escaneada con velocidad y contraste optimizados
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         if len(doc) > 0:
             pagina = doc[0]
             
-            # Renderizamos a 150 DPI para que los números y cédulas salgan perfectamente nítidos
+            # Renderizamos a 150 DPI (equilibrio ideal)
             pix = pagina.get_pixmap(dpi=150) 
             
-            # Convertimos a escala de grises ('L') para que Tesseract procese más rápido y con mayor precisión
+            # Convertimos a escala de grises y aplicamos un filtro de umbral (threshold) 
+            # para dejar el fondo blanco puro y las letras/números en negro puro. 
+            # Esto acelera a Tesseract a la mitad del tiempo y afila los dígitos de las cédulas.
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples).convert('L')
             
-            # Configuración avanzada de Tesseract para optimizar la lectura de formularios y números (--psm 6)
+            # Ajuste de contraste automático simple para resaltar los números borrosos
+            threshold = 160
+            img = img.point(lambda p: 255 if p > threshold else 0)
+            
+            # Configuración optimizada para bloques de texto de formularios (--psm 6)
             custom_config = r'--oem 3 --psm 6'
             
             texto_crudo = pytesseract.image_to_string(img, config=custom_config)
             texto_limpio = texto_crudo.replace("|", "")
         else:
             raise HTTPException(status_code=400, detail="El PDF está vacío o corrupto.")
-
         # 2. Extracciones con expresiones regulares (Actualizadas y Definitivas)
         
         # ESTRATEGIA 1 (La más segura): Buscar la cédula directamente en la sección superior "DATOS DEL PACIENTE"

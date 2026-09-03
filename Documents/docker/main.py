@@ -143,11 +143,19 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         match_ips = re.search(r"(SALUD OCUPACIONAL SANITAS SAS)", texto_limpio, re.IGNORECASE)
         ips_prestador = match_ips.group(1).strip() if match_ips else "No encontrado"
         
+       # Lista de exámenes de apoyo diagnóstico reales (excluyendo encabezados de tabla)
         lista_examenes = [
             "AUDIOMETRIA", "OPTOMETRIA", "VISIOMETRIA", "ESPIROMETRIA",
-            "ELECTROCARDIOGRAMA", "LABORATORIO CLÍNICO", "LABORATORIO CLINICO",
-            "PSICOLOGIA", "RAYOS X", "CUADRO HEMATICO"
+            "ELECTROCARDIOGRAMA", "PSICOLOGIA", "RAYOS X", "CUADRO HEMATICO"
         ]
+        
+        pruebas_encontradas = []
+        for examen in lista_examenes:
+            if re.search(r"\b" + examen + r"\b", texto_limpio, re.IGNORECASE):
+                if examen not in pruebas_encontradas:
+                    pruebas_encontradas.append(examen)
+                    
+        pruebas_apoyo = ", ".join(pruebas_encontradas) if pruebas_encontradas else "Ninguna registrada"
         
         pruebas_encontradas = []
         for examen in lista_examenes:

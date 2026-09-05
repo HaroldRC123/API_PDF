@@ -1,31 +1,33 @@
 import os
-# CRUCIAL: Limita Tesseract a 1 hilo para evitar saturar la CPU en Render y acelerar el procesamiento
-os.environ["OMP_THREAD_LIMIT"] = "1"
-
 import base64
 import json
 import traceback
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
-import fitz    # PyMuPDF
-import pytesseract
-from PIL import Image, ImageEnhance
-import re
+import fitz  # PyMuPDF
+from PIL import Image
+from openai import OpenAI
 
-app = FastAPI(title="SGSST PDF Extractor API con OCR", version="9.7")
+app = FastAPI(title="SGSST PDF Extractor API con GPT-4o-mini", version="11.0")
+
+# Inicializamos el cliente de OpenAI (tomará automáticamente la API Key de las variables de entorno de Render)
+client = OpenAI()
 
 @app.post("/api/procesar-examen/")
 async def procesar_examen(request: Request, file: UploadFile = None):
     try:
         pdf_bytes = None
 
+        # OPCIÓN 1: Si se envía como Form-Data / UploadFile (Recomendado para Power Automate)
         if file is not None:
             pdf_bytes = await file.read()
             print("Archivo recibido por Form-Data (UploadFile).")
         else:
+            # Obtenemos el cuerpo crudo de la solicitud como bytes
             body_bytes = await request.body()
             if not body_bytes or len(body_bytes) == 0:
                 raise HTTPException(status_code=400, detail="El cuerpo de la solicitud llegó vacío.")
             
+            # OPCIÓN 2: Intentar interpretar el cuerpo como un JSON de Power Automate {"$content": "..."}
             try:
                 body_json = json.loads(body_bytes.decode('utf-8'))
                 if isinstance(body_json, dict):
@@ -35,6 +37,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             except Exception:
                 pass
                 
+            # OPCIÓN 3: Si no vino en JSON ni Form-Data, asumimos binario puro
             if pdf_bytes is None:
                 pdf_bytes = body_bytes
                 print("Archivo binario directo detectado.")
@@ -42,162 +45,81 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-        # 1. Abrir el PDF y procesar a 150 DPI
+        # 1. Abrir el PDF y rasterizar la primera página a imagen (150 DPI para máxima nitidez visual)
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         if len(doc) > 0:
             pagina = doc[0]
-            pix = pagina.get_pixmap(dpi=150, colorspace=fitz.csGRAY) 
-            img = Image.frombytes("L", [pix.width, pix.height], pix.samples)
+            pix = pagina.get_pixmap(dpi=150) 
             
-            # Realce controlado
-            enhancer_contrast = ImageEnhance.Contrast(img)
-            img = enhancer_contrast.enhance(1.6)
-            
-            enhancer_sharpness = ImageEnhance.Sharpness(img)
-            img = enhancer_sharpness.enhance(1.8)
-            
-            custom_config = r'--oem 3 --psm 6'
-            
-            texto_crudo = pytesseract.image_to_string(img, config=custom_config)
-            texto_limpio = texto_crudo.replace("|", "")
+            # Guardamos temporalmente en el contenedor de Render para enviarla a OpenAI
+            img_path = "/tmp/certificado_temp.png"
+            pix.save(img_path)
         else:
             raise HTTPException(status_code=400, detail="El PDF está vacío o corrupto.")
 
-        # 2. Extracciones con Expresiones Regulares
+        # 2. Codificar la imagen generada a Base64
+        with open(img_path, "rb") as image_file:
+            base64_image = base64.b64encode(image_file.read()).decode('utf-8')
+
+        # 3. Prompt estructurado y experto para GPT-4o-mini Vision
+        prompt_sistema = """
+        Eres un asistente experto en auditoría de salud ocupacional (SGSST) en Colombia. 
+        Analiza la imagen de este certificado médico ocupacional de Sanitas y extrae la información requerida 
+        devolviendo ÚNICAMENTE un objeto JSON válido (sin formato de bloques markdown ni texto adicional), estructurado exactamente con estas llaves:
+        {
+          "nombre_empleado": "Nombre completo del trabajador en minúsculas",
+          "tipo_documento": "CC o CE",
+          "numero_documento": "Número de cédula del paciente (ATENCIÓN: Ignora las cédulas de los médicos firmantes al pie de página, extrae estrictamente la del paciente de la sección superior)",
+          "empresa_cliente": "Nombre de la empresa cliente en mayúsculas",
+          "tipo_examen": "Tipo de evaluación en minúsculas (ej: periodico, preingreso)",
+          "fecha_examen": "Fecha de atención en formato YYYY-MM-DD",
+          "concepto_aptitud": "Texto exacto de la etiqueta de concepto de aptitud en minúsculas (ej: con restricciones para la labor)",
+          "observaciones": "Texto completo y 100% íntegro de 'OBSERVACIONES AL CONCEPTO' en minúsculas. ADVERTENCIA: Captura todo el párrafo clínico completo de principio a fin, aun si contiene palabras como 'énfasis' o 'enfasis' a mitad de texto.",
+          "enfasis": "Énfasis médico limpio en minúsculas (ej: osteomuscular, visual)",
+          "limitaciones": "Limitaciones o restricciones indicadas en minúsculas (si no hay, coloca 'ninguna')",
+          "ips_prestador": "Nombre de la IPS prestadora en minúsculas",
+          "pruebas_apoyo": "Lista separada por comas de las pruebas diagnósticas realizadas (ej: audiometria, optometria) en minúsculas. NO incluyas encabezados fijos de tablas.",
+          "recomendaciones_medicas": "Lista separada por comas de todas las recomendaciones marcadas o enlistadas en la sección 'RECOMENDACIONES' (ej: examen periodico ocupacional, continuar manejo medico, pausas activas, higiene postural) en minúsculas."
+        }
+        """
+
+        # 4. Solicitud al modelo multimodal de OpenAI
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_sistema},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=900,
+            temperature=0.0
+        )
+
+        # 5. Procesamiento y limpieza del JSON devuelto por la IA
+        contenido_respuesta = response.choices[0].message.content.strip()
         
-        todas_cedulas = re.findall(r"(CC|CE)[-\.\s]*(\d+)", texto_limpio, re.IGNORECASE)
-        cedulas_doctores = ["1013609058", "46672834", "46072854", "4607285", "101360905", "1032363717", "554771"] 
-        
-        cedulas_validas = []
-        for tipo, num in todas_cedulas:
-            num_limpio = num.strip()
-            if num_limpio not in cedulas_doctores and len(num_limpio) > 5:
-                cedulas_validas.append((tipo.strip().upper(), num_limpio))
-        
-        if cedulas_validas:
-            tipo_documento = cedulas_validas[0][0]
-            numero_documento = cedulas_validas[0][1]
-        else:
-            tipo_documento = "No encontrado"
-            numero_documento = "No encontrado"
+        if contenido_respuesta.startswith("```"):
+            contenido_respuesta = contenido_respuesta.split("```")[1]
+            if contenido_respuesta.startswith("json"):
+                contenido_respuesta = contenido_respuesta[4:]
+        contenido_respuesta = contenido_respuesta.strip()
 
-        match_nombre = re.search(r"NOMBRE:\s*[\n\|\s]*([A-ZÑ\s]{5,})\n", texto_limpio)
-        if match_nombre and "IDENTIFICACI" not in match_nombre.group(1):
-            nombre = match_nombre.group(1).strip()
-        else:
-            match_nombre_alt = re.search(r"SEXO:?\s*\n([A-ZÑ\s]+)\n(?:CC|CE)", texto_limpio)
-            nombre = match_nombre_alt.group(1).strip() if match_nombre_alt else "No encontrado"
-
-        match_empresa = re.search(r"EDAD:\s*\d+\s*AÑOS\s*([A-Z\s]+)\n", texto_limpio)
-        if not match_empresa:
-            match_empresa = re.search(r"NOMBRE:\s*([A-Z\s]+)\s*DATOS DE LA ATENCIÓN", texto_limpio, re.DOTALL)
-        empresa = match_empresa.group(1).strip() if match_empresa else "AGENCE FRANCE PRESSE"
-
-        match_tipo = re.search(r"TIPO DE EVALUACION:?\s*[\n\|\s]*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
-        tipo_examen = match_tipo.group(1).strip() if match_tipo else "No encontrado"
-
-        match_fecha = re.search(r"FECHA DE ATENCI[OÓ]N[^\d]*([\d]{4}[-/][\d]{2}[-/][\d]{2})", texto_limpio)
-        fecha_examen = match_fecha.group(1).strip() if match_fecha else "No encontrado"
-
-        match_concepto = re.search(r"CONCEPTO(?:\sEXAMEN\s[A-ZÁÉÍÓÚ]+)?[^:]*:\s*([^\n]+)", texto_limpio, re.IGNORECASE)
-        concepto = match_concepto.group(1).strip() if match_concepto else "No encontrado"
-
-        # --- OBSERVACIONES AL CONCEPTO CORREGIDO ---
-        # Se añade \n\s* antes del lookahead para obligar a que ENFASIS o RECOMENDACIONES estén en una línea nueva
-        match_observaciones = re.search(r"OBSERVACIONES\s+AL\s+CONCEPTO:\s*(.*?)(?:\n\s*(?:ENFASIS|ÉNFASIS|RECOMENDACIONES|LIMITACIONES|TIPO LIMITACI[OÓ]N|> GENERALES|PARACLINICOS)|$)", texto_limpio, re.DOTALL | re.IGNORECASE)
-        if match_observaciones:
-            observaciones = match_observaciones.group(1).replace('\n', ' ').strip()
-            observaciones = re.sub(r'\s+', ' ', observaciones)
-        else:
-            observaciones = "No encontrado"
-
-        match_enfasis = re.search(r"(?:É|E)NFASIS(?:\s+EN)?\s*[-:]?\s*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
-        if match_enfasis and match_enfasis.group(1).upper() != "EN":
-            enfasis = match_enfasis.group(1).strip().upper()
-        else:
-            posibles_enfasis = ["OSTEOMUSCULAR", "VISUAL", "VOZ", "ALTURAS", "NEUROLOGICO", "AUDITIVO"]
-            enfasis = "No especificado"
-            for item in posibles_enfasis:
-                if item in texto_limpio.upper():
-                    enfasis = item
-                    break
-        
-        if enfasis.startswith("EN "):
-            enfasis = enfasis[3:]
-        elif enfasis.startswith("EN"):
-            enfasis = enfasis[2:]
-
-        # --- LIMITACIONES CORREGIDAS ---
-        # Se busca la observación SOLO dentro del bloque final de limitaciones
-        match_lim_zona = re.search(r"LIMITACIONES O RESTRICCIONES(.*?)(?:Autorizo al médico|$)", texto_limpio, re.DOTALL | re.IGNORECASE)
-        limitaciones = "NINGUNA"
-        if match_lim_zona:
-            zona_lim = match_lim_zona.group(1)
-            match_obs_lim = re.search(r"OBSERVACIÓN:\s*([^\n]+)", zona_lim, re.IGNORECASE)
-            if match_obs_lim:
-                texto_limitacion = match_obs_lim.group(1).strip()
-                if texto_limitacion.upper() != "NINGUNA":
-                    limitaciones = texto_limitacion
-
-        match_ips = re.search(r"(SALUD OCUPACIONAL SANITAS SAS)", texto_limpio, re.IGNORECASE)
-        ips_prestador = match_ips.group(1).strip() if match_ips else "No encontrado"
-        
-        lista_examenes = [
-            "AUDIOMETRIA", "OPTOMETRIA", "VISIOMETRIA", "ESPIROMETRIA",
-            "ELECTROCARDIOGRAMA", "PSICOLOGIA", "RAYOS X", 
-            "CUADRO HEMATICO", "HEMOGRAMA", "GLICEMIA", "PERFIL LIPIDICO"
-        ]
-        
-        pruebas_encontradas = []
-        for examen in lista_examenes:
-            if re.search(r"\b" + examen + r"\b", texto_limpio, re.IGNORECASE):
-                if examen not in pruebas_encontradas:
-                    pruebas_encontradas.append(examen)
-                    
-        pruebas_apoyo = ", ".join(pruebas_encontradas) if pruebas_encontradas else "Ninguna registrada"
-        
-        # --- RECOMENDACIONES CORREGIDAS ---
-        match_bloque_recom = re.search(r"RECOMENDACIONES(.*?)(?:LIMITACIONES|TIPO LIMITACI[OÓ]N|Autorizo al médico|$)", texto_limpio, re.DOTALL | re.IGNORECASE)
-        texto_recomendaciones_zona = match_bloque_recom.group(1) if match_bloque_recom else texto_limpio
-
-        lista_recomendaciones = [
-            "EXAMEN PERIODICO OCUPACIONAL", "EXAMEN PERIÓDICO OCUPACIONAL",
-            "PAUSAS ACTIVAS", "HIGIENE POSTURAL", "USO DE EPP",
-            "HABITOS SALUDABLES", "CONTROL DE PESO", "CORRECCION VISUAL",
-            "CONTINUAR MANEJO MEDICO", "CONTINUAR MANEJO MÉDICO"
-        ]
-        
-        recom_encontradas = []
-        for recom in lista_recomendaciones:
-            if re.search(r"\b" + recom.replace("Ó", "[OÓ]").replace("Í", "[IÍ]") + r"\b", texto_recomendaciones_zona, re.IGNORECASE):
-                nombre_limpio = recom.replace("Ó", "O").replace("Í", "I")
-                if nombre_limpio not in recom_encontradas:
-                    recom_encontradas.append(nombre_limpio)
-                    
-        recomendaciones_medicas = ", ".join(recom_encontradas) if recom_encontradas else "Ninguna"
-
-        def min_seguro(val):
-            return val.lower() if isinstance(val, str) else val
+        datos_extraidos = json.loads(contenido_respuesta)
 
         return {
             "status": "ok",
             "bytes_recibidos": len(pdf_bytes),
-            "datos_extraidos": {
-                "nombre_empleado": min_seguro(nombre),
-                "tipo_documento": tipo_documento,
-                "numero_documento": numero_documento,
-                "empresa_cliente": empresa.upper(),
-                "tipo_examen": min_seguro(tipo_examen),
-                "fecha_examen": fecha_examen,
-                "concepto_aptitud": min_seguro(concepto),
-                "observaciones": min_seguro(observaciones),
-                "enfasis": min_seguro(enfasis),
-                "limitaciones": min_seguro(limitaciones),
-                "ips_prestador": min_seguro(ips_prestador),
-                "pruebas_apoyo": min_seguro(pruebas_apoyo),
-                "recomendaciones_medicas": min_seguro(recomendaciones_medicas),
-            },
+            "datos_extraidos": datos_extraidos
         }
         
     except HTTPException as he:
@@ -210,4 +132,4 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Extractor OCR final activo v9.7"}
+    return {"status": "online", "system": "Extractor OCR con GPT-4o-mini activo v11.0"}

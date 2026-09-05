@@ -1,5 +1,6 @@
 fastapi
 uvicorn
-PyMuPDF
+pymupdf
 Pillow
 openai
+python-multipart

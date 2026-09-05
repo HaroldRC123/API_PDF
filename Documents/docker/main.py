@@ -1,5 +1,5 @@
 import os
-# CRUCIAL: Evita que Tesseract sature la CPU gratuita de Render intentando usar multi-hilos
+# CRUCIAL: Limita Tesseract a 1 hilo para evitar saturar la CPU en Render y acelerar el procesamiento
 os.environ["OMP_THREAD_LIMIT"] = "1"
 
 import base64
@@ -11,21 +11,24 @@ import pytesseract
 from PIL import Image, ImageEnhance
 import re
 
-app = FastAPI(title="SGSST PDF Extractor API con OCR", version="9.4")
+app = FastAPI(title="SGSST PDF Extractor API con OCR", version="9.5")
 
 @app.post("/api/procesar-examen/")
 async def procesar_examen(request: Request, file: UploadFile = None):
     try:
         pdf_bytes = None
 
+        # OPCIÓN 1: Si se envía como Form-Data / UploadFile (Recomendado para Power Automate)
         if file is not None:
             pdf_bytes = await file.read()
             print("Archivo recibido por Form-Data (UploadFile).")
         else:
+            # Obtenemos el cuerpo crudo de la solicitud como bytes
             body_bytes = await request.body()
             if not body_bytes or len(body_bytes) == 0:
                 raise HTTPException(status_code=400, detail="El cuerpo de la solicitud llegó vacío.")
             
+            # OPCIÓN 2: Intentar interpretar el cuerpo como un JSON de Power Automate {"$content": "..."}
             try:
                 body_json = json.loads(body_bytes.decode('utf-8'))
                 if isinstance(body_json, dict):
@@ -35,6 +38,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             except Exception:
                 pass
                 
+            # OPCIÓN 3: Si no vino en JSON ni Form-Data, asumimos binario puro
             if pdf_bytes is None:
                 pdf_bytes = body_bytes
                 print("Archivo binario directo detectado.")
@@ -42,22 +46,22 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-        # 1. Abrir el PDF y procesar la única página directamente en escala de grises
+        # 1. Abrir el PDF y procesar la única página en escala de grises optimizada a 150 DPI
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         if len(doc) > 0:
             pagina = doc[0]
-            
-            # Renderizamos directamente a escala de grises a 120 DPI (equilibrio perfecto para leer 6 y 8 sin pesar demasiado)
-            pix = pagina.get_pixmap(dpi=200, colorspace=fitz.csGRAY) 
+            pix = pagina.get_pixmap(dpi=150, colorspace=fitz.csGRAY) 
             img = Image.frombytes("L", [pix.width, pix.height], pix.samples)
             
-            # --- MEJORA RÁPIDA DE CONTRASTE ---
-            # Realce optimizado para afilar los trazos de los números sin sobrecargar el script
-            enhancer = ImageEnhance.Contrast(img)
-            img = enhancer.enhance(1.5)
+            # Realce controlado de contraste y nitidez (evita confusión entre 5, 6 y 8)
+            enhancer_contrast = ImageEnhance.Contrast(img)
+            img = enhancer_contrast.enhance(1.6)
             
-            # Configuración optimizada de Tesseract (--psm 6 para bloques de formularios)
+            enhancer_sharpness = ImageEnhance.Sharpness(img)
+            img = enhancer_sharpness.enhance(1.8)
+            
+            # Configuración de Tesseract para bloques de formularios (--psm 6)
             custom_config = r'--oem 3 --psm 6'
             
             texto_crudo = pytesseract.image_to_string(img, config=custom_config)
@@ -65,9 +69,9 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         else:
             raise HTTPException(status_code=400, detail="El PDF está vacío o corrupto.")
 
-        # 2. Extracciones con expresiones regulares (Blindadas y Definitivas)
+        # 2. Extracciones con Expresiones Regulares
         
-        # Extracción segura de la cédula del paciente (excluyendo médicos)
+        # Cédula del paciente (Excluyendo listas negras de médicos firmantes)
         todas_cedulas = re.findall(r"(CC|CE)[-\.\s]*(\d+)", texto_limpio, re.IGNORECASE)
         cedulas_doctores = ["1013609058", "46672834", "46072854", "4607285", "101360905"] 
         
@@ -106,19 +110,19 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         match_fecha = re.search(r"FECHA DE ATENCI[OÓ]N[^\d]*([\d]{4}[-/][\d]{2}[-/][\d]{2})", texto_limpio)
         fecha_examen = match_fecha.group(1).strip() if match_fecha else "No encontrado"
 
-        # Concepto de aptitud
-        match_concepto = re.search(r"CONCEPTO[^:]*:\s*([^\n]+)", texto_limpio)
+        # Concepto estricto (Únicamente la etiqueta de aptitud)
+        match_concepto = re.search(r"CONCEPTO(?:\sEXAMEN\s[A-ZÁÉÍÓÚ]+)?[^:]*:\s*([^\n]+)", texto_limpio, re.IGNORECASE)
         concepto = match_concepto.group(1).strip() if match_concepto else "No encontrado"
 
-        # Observaciones
-        match_observaciones = re.search(r"OBSERVACIONES AL CONCEPTO:\s*(.*?)(?=ENFASIS|ÉNFASIS|RECOMENDACIONES|LIMITACIONES|TIPO LIMITACI[OÓ]N|> GENERALES|$)", texto_limpio, re.DOTALL | re.IGNORECASE)
+        # Observaciones al concepto (Bloque clínico completo separado del concepto)
+        match_observaciones = re.search(r"OBSERVACIONES\s+AL\s+CONCEPTO:\s*(.*?)(?=ENFASIS|ÉNFASIS|RECOMENDACIONES|LIMITACIONES|TIPO LIMITACI[OÓ]N|> GENERALES|PARACLINICOS|$)", texto_limpio, re.DOTALL | re.IGNORECASE)
         if match_observaciones:
             observaciones = match_observaciones.group(1).replace('\n', ' ').strip()
             observaciones = re.sub(r'\s+', ' ', observaciones)
         else:
             observaciones = "No encontrado"
 
-        # Énfasis
+        # Énfasis (Limpio de prefijos extraños)
         match_enfasis = re.search(r"(?:É|E)NFASIS(?:\s+EN)?\s*[-:]?\s*([A-ZÁÉÍÓÚ]+)", texto_limpio, re.IGNORECASE)
         if match_enfasis and match_enfasis.group(1).upper() != "EN":
             enfasis = match_enfasis.group(1).strip().upper()
@@ -143,10 +147,11 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         match_ips = re.search(r"(SALUD OCUPACIONAL SANITAS SAS)", texto_limpio, re.IGNORECASE)
         ips_prestador = match_ips.group(1).strip() if match_ips else "No encontrado"
         
-       # Lista de exámenes de apoyo diagnóstico reales (excluyendo encabezados de tabla)
+        # Pruebas de apoyo diagnóstico (excluyendo encabezados fijos de la tabla)
         lista_examenes = [
             "AUDIOMETRIA", "OPTOMETRIA", "VISIOMETRIA", "ESPIROMETRIA",
-            "ELECTROCARDIOGRAMA", "PSICOLOGIA", "RAYOS X", "CUADRO HEMATICO"
+            "ELECTROCARDIOGRAMA", "PSICOLOGIA", "RAYOS X", 
+            "CUADRO HEMATICO", "HEMOGRAMA", "GLICEMIA", "PERFIL LIPIDICO"
         ]
         
         pruebas_encontradas = []
@@ -157,15 +162,10 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                     
         pruebas_apoyo = ", ".join(pruebas_encontradas) if pruebas_encontradas else "Ninguna registrada"
         
-        pruebas_encontradas = []
-        for examen in lista_examenes:
-            if re.search(r"\b" + examen + r"\b", texto_limpio, re.IGNORECASE):
-                if examen == "LABORATORIO CLÍNICO": examen = "LABORATORIO CLINICO"
-                if examen not in pruebas_encontradas:
-                    pruebas_encontradas.append(examen)
-                    
-        pruebas_apoyo = ", ".join(pruebas_encontradas) if pruebas_encontradas else "Ninguna registrada"
-        
+        # Recomendaciones médicas (Extraídas exclusivamente de la sección RECOMENDACIONES)
+        match_bloque_recom = re.search(r"RECOMENDACIONES(.*?)(?:LIMITACIONES|TIPO LIMITACI[OÓ]N|Autorizo al médico|$)", texto_limpio, re.DOTALL | re.IGNORECASE)
+        texto_recomendaciones_zona = match_bloque_recom.group(1) if match_bloque_recom else texto_limpio
+
         lista_recomendaciones = [
             "EXAMEN PERIODICO OCUPACIONAL", "EXAMEN PERIÓDICO OCUPACIONAL",
             "PAUSAS ACTIVAS", "HIGIENE POSTURAL", "USO DE EPP",
@@ -174,7 +174,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         
         recom_encontradas = []
         for recom in lista_recomendaciones:
-            if re.search(r"\b" + recom.replace("Ó", "[OÓ]").replace("Í", "[IÍ]") + r"\b", texto_limpio, re.IGNORECASE):
+            if re.search(r"\b" + recom.replace("Ó", "[OÓ]").replace("Í", "[IÍ]") + r"\b", texto_recomendaciones_zona, re.IGNORECASE):
                 nombre_limpio = recom.replace("Ó", "O").replace("Í", "I")
                 if nombre_limpio not in recom_encontradas:
                     recom_encontradas.append(nombre_limpio)
@@ -198,7 +198,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                 "observaciones": min_seguro(observaciones),
                 "enfasis": min_seguro(enfasis),
                 "limitaciones": min_seguro(limitaciones),
-                "ips_prestador": ips_prestador.upper(),
+                "ips_prestador": min_seguro(ips_prestador),
                 "pruebas_apoyo": min_seguro(pruebas_apoyo),
                 "recomendaciones_medicas": min_seguro(recomendaciones_medicas),
             },
@@ -214,4 +214,4 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Extractor OCR final activo v9.4"}
+    return {"status": "online", "system": "Extractor OCR final activo v9.5"}

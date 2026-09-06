@@ -1,15 +1,15 @@
 import os
 import base64
 import json
+import re
 import traceback
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-import pymupdf as fitz  # Importación actualizada recomendada
+import pymupdf as fitz  # PyMuPDF
 from PIL import Image
 from openai import OpenAI
 
-app = FastAPI(title="SGSST PDF Extractor con GPT-4o-mini", version="11.1")
+app = FastAPI(title="SGSST PDF Extractor con GPT-4o-mini", version="11.2")
 
-# Inicializamos el cliente de OpenAI
 client = OpenAI()
 
 @app.post("/api/procesar-examen/")
@@ -17,7 +17,6 @@ async def procesar_examen(request: Request, file: UploadFile = None):
     try:
         pdf_bytes = None
 
-        # 1. Recepción del archivo (Soporta Form-Data, JSON Base64 o Binario Puro)
         if file is not None:
             pdf_bytes = await file.read()
         else:
@@ -40,32 +39,34 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-        # 2. Abrir el PDF y rasterizar a 250 DPI (Garantiza definición perfecta de números)
+        # 1. Abrir el PDF con PyMuPDF tanto para extraer texto de respaldo como para la imagen
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
+        texto_pdf_nativo = ""
+        for pagina_doc in doc:
+            texto_pdf_nativo += pagina_doc.get_text()
+
         if len(doc) > 0:
             pagina = doc[0]
-            # Subimos a 250 DPI para que los dígitos (8, 3, 0, etc.) no se fusionen visualmente
             pix = pagina.get_pixmap(dpi=250) 
-            
             img_path = "/tmp/certificado_temp.png"
             pix.save(img_path)
         else:
             raise HTTPException(status_code=400, detail="El PDF está vacío o corrupto.")
 
-        # 3. Codificar la imagen a Base64
+        # 2. Codificar la imagen a Base64
         with open(img_path, "rb") as image_file:
             base64_image = base64.b64encode(image_file.read()).decode('utf-8')
 
-       # Prompt actualizado con regla estricta para dígitos repetidos
+        # 3. Prompt para la IA
         prompt_sistema = """
         Eres un auditor experto en seguridad y salud ocupacional (SGSST) en Colombia. 
-        Analiza la imagen de este certificado médico ocupacional de Sanitas. Presta especial atención a los números de identificación para NUNCA omitir dígitos repetidos (como ceros u ochos seguidos).
-        Devuelve ÚNICAMENTE un objeto JSON válido (sin bloques markdown ni texto adicional) con estas llaves exactas:
+        Analiza la imagen de este certificado médico ocupacional de Sanitas y extrae la información requerida 
+        devolviendo ÚNICAMENTE un objeto JSON válido (sin bloques markdown ni texto adicional) con estas llaves exactas:
         {
           "nombre_empleado": "Nombre completo del trabajador en minúsculas",
           "tipo_documento": "CC o CE",
-          "numero_documento": "Número exacto de la cédula o cédula de extranjería del paciente. LÉELO CON EXTREMA ATENCIÓN DÍGITO POR DÍGITO. Si ves un número como 8088102, asegúrate de escribir los dos ochos y no omitas ninguno. Ignora las cédulas de los médicos firmantes.",
+          "numero_documento": "Número exacto de la cédula o cédula de extranjería del paciente. Ignora las cédulas de los médicos firmantes.",
           "empresa_cliente": "Nombre de la empresa cliente en mayúsculas",
           "tipo_examen": "Tipo de evaluación en minúsculas (ej: periodico, preingreso)",
           "fecha_examen": "Fecha de atención en formato YYYY-MM-DD",
@@ -79,7 +80,6 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         }
         """
 
-        # 5. Solicitud a GPT-4o-mini
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -100,9 +100,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             temperature=0.0
         )
 
-        # 6. Procesamiento y limpieza del JSON
         contenido_respuesta = response.choices[0].message.content.strip()
-        
         if contenido_respuesta.startswith("```"):
             contenido_respuesta = contenido_respuesta.split("```")[1]
             if contenido_respuesta.startswith("json"):
@@ -110,6 +108,25 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         contenido_respuesta = contenido_respuesta.strip()
 
         datos_extraidos = json.loads(contenido_respuesta)
+
+        # --- 4. CAPA DE VALIDACIÓN Y CORRECCIÓN DE CÉDULA POR PYTHON ---
+        # Buscamos en el texto nativo del PDF patrones de identificación del paciente (ej: CE-8088102 o CC 1073...)
+        cedulas_encontradas = re.findall(r"(?:CC|CE)[\.\-\s]*(\d{7,10})", texto_pdf_nativo, re.IGNORECASE)
+        cedulas_doctores_lista = ["1013609058", "46672834", "46072854", "4607285", "101360905", "1032363717", "554771"]
+        
+        cedula_corregida = None
+        for c in cedulas_encontradas:
+            if c not in cedulas_doctores_lista:
+                cedula_corregida = c
+                break
+
+        # Si encontramos una cédula válida en el texto nativo del PDF y la de la IA tiene menos dígitos o no coincide, la sobrescribimos por seguridad
+        if cedula_corregida:
+            num_ia = str(datos_extraidos.get("numero_documento", ""))
+            # Si la IA omitió un dígito (ej: longitud menor o falta de coincidencia exacta)
+            if len(num_ia) < len(cedula_corregida) or num_ia != cedula_corregida:
+                print(f"Corrigiendo número de documento de IA ({num_ia}) por el valor real del PDF ({cedula_corregida})")
+                datos_extraidos["numero_documento"] = cedula_corregida
 
         return {
             "status": "ok",
@@ -127,4 +144,4 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Extractor OCR con GPT-4o-mini activo v11.1"}
+    return {"status": "online", "system": "Extractor GPT-4o-mini con Autocorrección de Cédula v11.2"}

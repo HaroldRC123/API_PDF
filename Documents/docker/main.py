@@ -57,20 +57,20 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         with open(img_path, "rb") as image_file:
             base64_image = base64.b64encode(image_file.read()).decode('utf-8')
 
-        # 4. Prompt ultra-reforzado con atención especial en el número de documento
+       # Prompt actualizado con regla estricta para dígitos repetidos
         prompt_sistema = """
         Eres un auditor experto en seguridad y salud ocupacional (SGSST) en Colombia. 
-        Analiza la imagen de este certificado médico ocupacional de Sanitas con extrema precisión en los números 
-        de identificación. Devuelve ÚNICAMENTE un objeto JSON válido (sin bloques markdown ni texto adicional) con estas llaves:
+        Analiza la imagen de este certificado médico ocupacional de Sanitas. Presta especial atención a los números de identificación para NUNCA omitir dígitos repetidos (como ceros u ochos seguidos).
+        Devuelve ÚNICAMENTE un objeto JSON válido (sin bloques markdown ni texto adicional) con estas llaves exactas:
         {
           "nombre_empleado": "Nombre completo del trabajador en minúsculas",
           "tipo_documento": "CC o CE",
-          "numero_documento": "Número exacto de la cédula o cédula de extranjería del paciente. ADVERTENCIA CRÍTICA: Lee dígito por dígito con sumo cuidado para no omitir ningún número (como los ceros o los ochos dobles). Ignora las cédulas de los médicos firmantes al pie de página.",
+          "numero_documento": "Número exacto de la cédula o cédula de extranjería del paciente. LÉELO CON EXTREMA ATENCIÓN DÍGITO POR DÍGITO. Si ves un número como 8088102, asegúrate de escribir los dos ochos y no omitas ninguno. Ignora las cédulas de los médicos firmantes.",
           "empresa_cliente": "Nombre de la empresa cliente en mayúsculas",
           "tipo_examen": "Tipo de evaluación en minúsculas (ej: periodico, preingreso)",
           "fecha_examen": "Fecha de atención en formato YYYY-MM-DD",
           "concepto_aptitud": "Texto exacto de la etiqueta de concepto de aptitud en minúsculas",
-          "observaciones": "Texto completo y 100% íntegro de 'OBSERVACIONES AL CONCEPTO' en minúsculas, sin omitir partes",
+          "observaciones": "Texto completo y 100% íntegro de 'OBSERVACIONES AL CONCEPTO' en minúsculas",
           "enfasis": "Énfasis médico limpio en minúsculas (ej: osteomuscular, visual)",
           "limitaciones": "Limitaciones o restricciones indicadas en minúsculas (si no hay, coloca 'ninguna')",
           "ips_prestador": "Nombre de la IPS prestadora en minúsculas",

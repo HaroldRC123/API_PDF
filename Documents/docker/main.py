@@ -4,11 +4,11 @@ import json
 import re
 import traceback
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-import pymupdf as fitz  # PyMuPDF
+import pymupdf as fitz  
 from PIL import Image
 from openai import OpenAI
 
-app = FastAPI(title="SGSST PDF Extractor con Corrección Forzada", version="11.3")
+app = FastAPI(title="SGSST PDF Extractor Exacto", version="12.0")
 
 client = OpenAI()
 
@@ -39,9 +39,8 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-        # 1. Extraer texto nativo del PDF con PyMuPDF
+        # 1. Extracción de texto nativo con PyMuPDF (Respaldo)
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        
         texto_pdf_nativo = ""
         for pagina_doc in doc:
             texto_pdf_nativo += pagina_doc.get_text()
@@ -54,34 +53,34 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         else:
             raise HTTPException(status_code=400, detail="El PDF está vacío o corrupto.")
 
-        # 2. Codificar imagen a Base64
         with open(img_path, "rb") as image_file:
             base64_image = base64.b64encode(image_file.read()).decode('utf-8')
 
-        # 3. Prompt para la IA
+        # 2. Prompt ultra-estricto anti-resumen
         prompt_sistema = """
-        Eres un auditor experto en seguridad y salud ocupacional (SGSST) en Colombia. 
-        Analiza la imagen de este certificado médico ocupacional de Sanitas y extrae la información requerida 
-        devolviendo ÚNICAMENTE un objeto JSON válido (sin bloques markdown ni texto adicional) con estas llaves exactas:
+        Eres un transcriptor clínico estricto. Analiza el certificado de salud ocupacional de Sanitas. 
+        REGLA DE ORO: NO resumas ni abrevies ningún campo. Copia y pega el texto EXACTO que ves en la imagen.
+        Devuelve ÚNICAMENTE un JSON válido con estas llaves:
         {
           "nombre_empleado": "Nombre completo del trabajador en minúsculas",
           "tipo_documento": "CC o CE",
-          "numero_documento": "Número exacto de la cédula o cédula de extranjería del paciente. Ignora las cédulas de los médicos firmantes.",
+          "numero_documento": "Número exacto del paciente. LÉELO DÍGITO POR DÍGITO SIN OMITIR NINGUNO.",
           "empresa_cliente": "Nombre de la empresa cliente en mayúsculas",
-          "tipo_examen": "Tipo de evaluación en minúsculas (ej: periodico, preingreso)",
+          "tipo_examen": "Tipo de evaluación en minúsculas",
           "fecha_examen": "Fecha de atención en formato YYYY-MM-DD",
-          "concepto_aptitud": "Texto exacto de la etiqueta de concepto de aptitud en minúsculas",
-          "observaciones": "Texto completo y 100% íntegro de 'OBSERVACIONES AL CONCEPTO' en minúsculas",
-          "enfasis": "Énfasis médico limpio en minúsculas (ej: osteomuscular, visual)",
-          "limitaciones": "Limitaciones o restricciones indicadas en minúsculas (si no hay, coloca 'ninguna')",
-          "ips_prestador": "Nombre de la IPS prestadora en minúsculas",
-          "pruebas_apoyo": "Lista separada por comas de las pruebas diagnósticas realizadas en minúsculas",
-          "recomendaciones_medicas": "Lista separada por comas de todas las recomendaciones de la sección 'RECOMENDACIONES' en minúsculas"
+          "concepto_aptitud": "Copia LITERALMENTE el texto del concepto. NO uses la palabra 'apto' a menos que el documento diga explícitamente solo 'apto'. Si dice 'con hallazgos que requieren medidas...', copia todo eso de forma exacta.",
+          "observaciones": "Copia el texto completo e íntegro del bloque de observaciones, sin acortarlo.",
+          "enfasis": "Énfasis médico limpio (ej: osteomuscular)",
+          "limitaciones": "Limitaciones o restricciones exactas indicadas",
+          "ips_prestador": "Nombre de la IPS prestadora",
+          "pruebas_apoyo": "Pruebas diagnósticas realizadas",
+          "recomendaciones_medicas": "Lista completa de las recomendaciones marcadas"
         }
         """
 
+        # 3. Cambio al modelo principal GPT-4o (Alta precisión)
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[
                 {
                     "role": "user",
@@ -96,7 +95,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
                     ]
                 }
             ],
-            max_tokens=900,
+            max_tokens=1000,
             temperature=0.0
         )
 
@@ -109,24 +108,23 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
         datos_extraidos = json.loads(contenido_respuesta)
 
-        # --- 4. EXTRACCIÓN DIRECTA DESDE EL TEXTO VECTORIAL DEL PDF ---
-        # En los PDFs de Sanitas, el texto nativo suele conservar el número real de forma perfecta sin errores de rasterizado.
-        # Buscamos específicamente líneas que contengan "CE-" o "CC-" seguidas de números en el texto nativo del PDF.
-        match_cedula_pdf = re.search(r"(?:CC|CE)[\-\.\s]*(\d{7,10})", texto_pdf_nativo, re.IGNORECASE)
-        
-        cedulas_doctores_lista = ["1013609058", "46672834", "46072854", "4607285", "101360905", "1032363717", "554771"]
+        # 4. Respaldo por código para extracción de la cédula del texto digital
+        match_cedulas_pdf = re.findall(r"(?:CC|CE|TI|NIT|PP)[\-\.\s]*(\d{6,12})", texto_pdf_nativo, re.IGNORECASE)
+        # Se incluye la lista negra ampliada con los médicos recurrentes
+        cedulas_doctores = ["1013609058", "46672834", "46072854", "4607285", "101360905", "1032363717", "554771", "52270442"]
 
-        if match_cedula_pdf:
-            cedula_nativa = match_cedula_pdf.group(1).strip()
-            if cedula_nativa not in cedulas_doctores_lista:
-                # Si encontramos la cédula en el texto nativo del PDF, la imponemos obligatoriamente
-                datos_extraidos["numero_documento"] = cedula_nativa
-                print(f"Cédula blindada mediante texto nativo del PDF: {cedula_nativa}")
+        cedula_nativa_valida = None
+        for c in match_cedulas_pdf:
+            c_limpia = c.strip()
+            if c_limpia not in cedulas_doctores:
+                cedula_nativa_valida = c_limpia
+                break
 
-        # Corrección de emergencia adicional por si el texto nativo también viniera alterado en algún caso extremo
-        num_doc_actual = str(datos_extraidos.get("numero_documento", ""))
-        if num_doc_actual == "808102": # Caso específico de Andrew detectado
-            datos_extraidos["numero_documento"] = "8088102"
+        if cedula_nativa_valida:
+            num_ia = str(datos_extraidos.get("numero_documento", ""))
+            # Si hay disparidad (ej: omisión de un dígito por la IA), prioriza la lectura del texto digital nativo
+            if len(num_ia) < len(cedula_nativa_valida) or num_ia != cedula_nativa_valida:
+                datos_extraidos["numero_documento"] = cedula_nativa_valida
 
         return {
             "status": "ok",
@@ -144,4 +142,4 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Extractor GPT-4o-mini con Blindaje de Cédula v11.3"}
+    return {"status": "online", "system": "Extractor GPT-4o Precisión Alta v12.0"}

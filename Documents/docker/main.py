@@ -8,7 +8,7 @@ import pymupdf as fitz
 from PIL import Image
 from openai import OpenAI
 
-app = FastAPI(title="SGSST PDF Extractor Exacto", version="12.0")
+app = FastAPI(title="SGSST PDF Extractor Exacto", version="13.0")
 
 client = OpenAI()
 
@@ -39,7 +39,6 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
-        # 1. Extracción de texto nativo con PyMuPDF (Respaldo)
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         texto_pdf_nativo = ""
         for pagina_doc in doc:
@@ -56,29 +55,27 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         with open(img_path, "rb") as image_file:
             base64_image = base64.b64encode(image_file.read()).decode('utf-8')
 
-        # 2. Prompt ultra-estricto anti-resumen
+        # Prompt con reglas de frontera inflexibles
         prompt_sistema = """
-        Eres un transcriptor clínico estricto. Analiza el certificado de salud ocupacional de Sanitas. 
-        REGLA DE ORO: NO resumas ni abrevies ningún campo. Copia y pega el texto EXACTO que ves en la imagen.
+        Eres un transcriptor de datos OCR estricto y literal. Tu único objetivo es transcribir exactamente los campos del certificado médico, respetando estas reglas inviolables:
         Devuelve ÚNICAMENTE un JSON válido con estas llaves:
         {
           "nombre_empleado": "Nombre completo del trabajador en minúsculas",
           "tipo_documento": "CC o CE",
-          "numero_documento": "Número exacto del paciente. LÉELO DÍGITO POR DÍGITO SIN OMITIR NINGUNO.",
+          "numero_documento": "Busca en la sección 'DATOS DEL PACIENTE'. Extrae SOLO los números. IGNORA los números en la cabecera superior del documento.",
           "empresa_cliente": "Nombre de la empresa cliente en mayúsculas",
           "tipo_examen": "Tipo de evaluación en minúsculas",
           "fecha_examen": "Fecha de atención en formato YYYY-MM-DD",
-          "concepto_aptitud": "Copia LITERALMENTE el texto del concepto. NO uses la palabra 'apto' a menos que el documento diga explícitamente solo 'apto'. Si dice 'con hallazgos que requieren medidas...', copia todo eso de forma exacta.",
-          "observaciones": "Copia el texto completo e íntegro del bloque de observaciones, sin acortarlo.",
-          "enfasis": "Énfasis médico limpio (ej: osteomuscular)",
+          "concepto_aptitud": "Extrae SOLO el valor final, sin la etiqueta. Si el PDF dice 'CONCEPTO-EXAMEN PREINGRESO: CON HALLAZGOS QUE...', tú solo extraes 'con hallazgos que...'.",
+          "observaciones": "CRÍTICO: Todo el texto físico que aparece entre 'OBSERVACIONES AL CONCEPTO:' y la palabra 'ENFASIS' pertenece a este campo. Si el médico escribió frases como 'RECOMENDACIONES NUTRICIONALES...' en este espacio, PERTENECEN A OBSERVACIONES. Cópialo todo exactamente como un solo bloque de texto.",
+          "enfasis": "Extrae SOLO la especialidad médica (ej: 'osteomuscular', 'visual'). NO incluyas la palabra 'énfasis'.",
           "limitaciones": "Limitaciones o restricciones exactas indicadas",
           "ips_prestador": "Nombre de la IPS prestadora",
           "pruebas_apoyo": "Pruebas diagnósticas realizadas",
-          "recomendaciones_medicas": "Lista completa de las recomendaciones marcadas"
+          "recomendaciones_medicas": "CRÍTICO: Solo extrae los ítems que aparecen debajo del gran encabezado central 'RECOMENDACIONES' (generalmente marcados con viñetas). Si debajo de 'RECOMENDACIONES' no hay viñetas y solo sigue la sección 'LIMITACIONES', pon 'ninguna'."
         }
         """
 
-        # 3. Cambio al modelo principal GPT-4o (Alta precisión)
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -108,10 +105,14 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
         datos_extraidos = json.loads(contenido_respuesta)
 
-        # 4. Respaldo por código para extracción de la cédula del texto digital
-        match_cedulas_pdf = re.findall(r"(?:CC|CE|TI|NIT|PP)[\-\.\s]*(\d{6,12})", texto_pdf_nativo, re.IGNORECASE)
-        # Se incluye la lista negra ampliada con los médicos recurrentes
-        cedulas_doctores = ["1013609058", "46672834", "46072854", "4607285", "101360905", "1032363717", "554771", "52270442"]
+        # Respaldo en Python anclado a la palabra IDENTIFICACIÓN para evitar capturar basura del encabezado
+        match_cedulas_pdf = re.findall(r"IDENTIFICACI[OÓ]N:[\s\n]*(?:CC|CE|TI|NIT|PP)?[\-\.\s]*(\d{6,12})", texto_pdf_nativo, re.IGNORECASE)
+        
+        # Si no lo encuentra con la etiqueta, busca el patrón general
+        if not match_cedulas_pdf:
+            match_cedulas_pdf = re.findall(r"(?:CC|CE|TI|NIT|PP)[\-\.\s]*(\d{6,12})", texto_pdf_nativo, re.IGNORECASE)
+
+        cedulas_doctores = ["1013609058", "46672834", "46072854", "4607285", "101360905", "1032363717", "554771", "52270442", "830015429", "860006314"]
 
         cedula_nativa_valida = None
         for c in match_cedulas_pdf:
@@ -122,7 +123,6 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
         if cedula_nativa_valida:
             num_ia = str(datos_extraidos.get("numero_documento", ""))
-            # Si hay disparidad (ej: omisión de un dígito por la IA), prioriza la lectura del texto digital nativo
             if len(num_ia) < len(cedula_nativa_valida) or num_ia != cedula_nativa_valida:
                 datos_extraidos["numero_documento"] = cedula_nativa_valida
 
@@ -142,4 +142,4 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Extractor GPT-4o Precisión Alta v12.0"}
+    return {"status": "online", "system": "Extractor GPT-4o Reglas Estrictas v13.0"}

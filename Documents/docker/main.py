@@ -8,7 +8,7 @@ import pymupdf as fitz
 from PIL import Image
 from openai import OpenAI
 
-app = FastAPI(title="SGSST PDF Extractor Exacto", version="13.0")
+app = FastAPI(title="SGSST PDF Extractor Literal", version="14.0")
 
 client = OpenAI()
 
@@ -55,24 +55,24 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         with open(img_path, "rb") as image_file:
             base64_image = base64.b64encode(image_file.read()).decode('utf-8')
 
-        # Prompt con reglas de frontera inflexibles
+        # Prompt con delimitación topológica estricta para evitar cruce de bloques
         prompt_sistema = """
-        Eres un transcriptor de datos OCR estricto y literal. Tu único objetivo es transcribir exactamente los campos del certificado médico, respetando estas reglas inviolables:
+        Eres un transcriptor de datos OCR literal. No interpretas ni resumes. Transcribe los campos del certificado respetando estas reglas espaciales restrictivas:
         Devuelve ÚNICAMENTE un JSON válido con estas llaves:
         {
           "nombre_empleado": "Nombre completo del trabajador en minúsculas",
           "tipo_documento": "CC o CE",
-          "numero_documento": "Busca en la sección 'DATOS DEL PACIENTE'. Extrae SOLO los números. IGNORA los números en la cabecera superior del documento.",
-          "empresa_cliente": "Nombre de la empresa cliente en mayúsculas",
+          "numero_documento": "Busca en 'DATOS DEL PACIENTE'. Extrae SOLO los números. IGNORA cabeceras.",
+          "empresa_cliente": "Nombre de la empresa",
           "tipo_examen": "Tipo de evaluación en minúsculas",
           "fecha_examen": "Fecha de atención en formato YYYY-MM-DD",
-          "concepto_aptitud": "Extrae SOLO el valor final, sin la etiqueta. Si el PDF dice 'CONCEPTO-EXAMEN PREINGRESO: CON HALLAZGOS QUE...', tú solo extraes 'con hallazgos que...'.",
-          "observaciones": "CRÍTICO: Todo el texto físico que aparece entre 'OBSERVACIONES AL CONCEPTO:' y la palabra 'ENFASIS' pertenece a este campo. Si el médico escribió frases como 'RECOMENDACIONES NUTRICIONALES...' en este espacio, PERTENECEN A OBSERVACIONES. Cópialo todo exactamente como un solo bloque de texto.",
-          "enfasis": "Extrae SOLO la especialidad médica (ej: 'osteomuscular', 'visual'). NO incluyas la palabra 'énfasis'.",
-          "limitaciones": "Limitaciones o restricciones exactas indicadas",
+          "concepto_aptitud": "REGLA ESTRICTA: Busca la línea que empieza con la palabra 'CONCEPTO' (ej. CONCEPTO-EXAMEN PREINGRESO:). Copia EXACTAMENTE TODAS las palabras que están después de los dos puntos (:). NO resumas, NO cambies ni omitas una sola palabra.",
+          "observaciones": "REGLA ESTRICTA: Extrae TODO el texto ubicado físicamente entre 'OBSERVACIONES AL CONCEPTO:' y 'ENFASIS'. Si el médico escribió frases como 'RECOMENDACIONES NUTRICIONALES' dentro de este párrafo, PERTENECEN AQUÍ. No las muevas a otro campo.",
+          "enfasis": "Especialidad médica limpia (ej: osteomuscular).",
+          "limitaciones": "Limitaciones indicadas en minúsculas. Si no hay, 'ninguna'.",
           "ips_prestador": "Nombre de la IPS prestadora",
           "pruebas_apoyo": "Pruebas diagnósticas realizadas",
-          "recomendaciones_medicas": "CRÍTICO: Solo extrae los ítems que aparecen debajo del gran encabezado central 'RECOMENDACIONES' (generalmente marcados con viñetas). Si debajo de 'RECOMENDACIONES' no hay viñetas y solo sigue la sección 'LIMITACIONES', pon 'ninguna'."
+          "recomendaciones_medicas": "REGLA ESTRICTA: Ubica la franja inferior que dice 'RECOMENDACIONES'. Debajo de ella, hay ítems con casillas de verificación cuadradas (☑ o similares). Extrae ÚNICAMENTE los ítems que tienen la casilla marcada (ej: EXAMEN PERIÓDICO OCUPACIONAL, PAUSAS ACTIVAS, HIGIENE POSTURAL). IGNORA cualquier texto de la sección de observaciones superior."
         }
         """
 
@@ -105,10 +105,12 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
         datos_extraidos = json.loads(contenido_respuesta)
 
-        # Respaldo en Python anclado a la palabra IDENTIFICACIÓN para evitar capturar basura del encabezado
+        # Imposición estricta de formato por código: Nombre de empresa siempre en mayúsculas
+        if "empresa_cliente" in datos_extraidos and isinstance(datos_extraidos["empresa_cliente"], str):
+            datos_extraidos["empresa_cliente"] = datos_extraidos["empresa_cliente"].upper()
+
+        # Respaldo en Python para el número de cédula
         match_cedulas_pdf = re.findall(r"IDENTIFICACI[OÓ]N:[\s\n]*(?:CC|CE|TI|NIT|PP)?[\-\.\s]*(\d{6,12})", texto_pdf_nativo, re.IGNORECASE)
-        
-        # Si no lo encuentra con la etiqueta, busca el patrón general
         if not match_cedulas_pdf:
             match_cedulas_pdf = re.findall(r"(?:CC|CE|TI|NIT|PP)[\-\.\s]*(\d{6,12})", texto_pdf_nativo, re.IGNORECASE)
 
@@ -142,4 +144,4 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Extractor GPT-4o Reglas Estrictas v13.0"}
+    return {"status": "online", "system": "Extractor GPT-4o Reglas Espaciales v14.0"}

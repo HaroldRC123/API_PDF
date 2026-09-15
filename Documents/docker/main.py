@@ -55,9 +55,9 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         with open(img_path, "rb") as image_file:
             base64_image = base64.b64encode(image_file.read()).decode('utf-8')
 
-        # Prompt ajustado para exigir precisión milimétrica en la cédula
+      # Prompt ajustado con reglas de escaneo horizontal forzado para cuadrículas
         prompt_sistema = """
-        Eres un transcriptor de datos OCR literal. No interpretas ni resumes. Transcribe los campos del certificado respetando estas reglas espaciales restrictivas:
+        Eres un transcriptor de datos OCR literal de altísima precisión. No interpretas ni resumes. Transcribe los campos del certificado respetando estas reglas espaciales restrictivas:
         Devuelve ÚNICAMENTE un JSON válido con estas llaves:
         {
           "nombre_empleado": "Nombre completo del trabajador en minúsculas",
@@ -67,12 +67,12 @@ async def procesar_examen(request: Request, file: UploadFile = None):
           "tipo_examen": "Tipo de evaluación",
           "fecha_examen": "Fecha de atención en formato YYYY-MM-DD",
           "concepto_aptitud": "Copia TODO el texto que aparece después de los dos puntos (:) en la línea del concepto. Ignora la etiqueta inicial.",
-          "observaciones": "REGLA ESTRICTA: Extrae TODO el texto ubicado físicamente entre 'OBSERVACIONES AL CONCEPTO:' y 'ENFASIS'. Si hay frases de recomendaciones nutricionales ahí, PERTENECEN AQUÍ.",
+          "observaciones": "REGLA ESTRICTA: Extrae TODO el texto ubicado físicamente entre 'OBSERVACIONES AL CONCEPTO:' y 'ENFASIS'.",
           "enfasis": "Especialidad médica limpia (ej: osteomuscular).",
           "limitaciones": "Limitaciones indicadas en minúsculas. Si no hay, pon 'ninguna'.",
           "ips_prestador": "Nombre de la IPS prestadora",
           "pruebas_apoyo": "Pruebas diagnósticas realizadas",
-          "recomendaciones_medicas": "REGLA ESTRICTA: Ubica la franja inferior que dice 'RECOMENDACIONES'. Extrae ÚNICAMENTE los ítems que tienen la casilla marcada (☑). IGNORA cualquier texto de la sección superior."
+          "recomendaciones_medicas": "ESCANEO MULTICOLUMNA OBLIGATORIO: Ubica la sección 'RECOMENDACIONES' -> '» GENERALES'. Los ítems están distribuidos horizontalmente a lo ancho de la página. Debes escanear la imagen de extrema izquierda a extrema derecha. Extrae TODOS los textos que tengan una casilla negra marcada (☑) a su lado. PROHIBIDO detenerse en la primera columna; debes recorrer toda la fila hasta el margen derecho. Sepáralos por comas."
         }
         """
 

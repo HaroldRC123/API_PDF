@@ -8,7 +8,7 @@ import pymupdf as fitz
 from PIL import Image
 from openai import OpenAI
 
-app = FastAPI(title="SGSST PDF Extractor Literal", version="15.0")
+app = FastAPI(title="SGSST PDF Extractor Literal", version="16.0")
 
 client = OpenAI()
 
@@ -55,24 +55,24 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         with open(img_path, "rb") as image_file:
             base64_image = base64.b64encode(image_file.read()).decode('utf-8')
 
-      # Prompt ajustado con reglas de escaneo horizontal forzado para cuadrículas
+        # Prompt ajustado con los nuevos formatos solicitados
         prompt_sistema = """
         Eres un transcriptor de datos OCR literal de altísima precisión. No interpretas ni resumes. Transcribe los campos del certificado respetando estas reglas espaciales restrictivas:
         Devuelve ÚNICAMENTE un JSON válido con estas llaves:
         {
-          "nombre_empleado": "Nombre completo del trabajador en minúsculas",
+          "nombre_empleado": "Nombre completo del trabajador. Formato Título (Ej: Juan Perez Gomez).",
           "tipo_documento": "CC o CE",
           "numero_documento": "Busca ESTRICTAMENTE en la sección 'DATOS DEL PACIENTE' junto a la etiqueta 'IDENTIFICACIÓN:'. Extrae todos los dígitos exactos. NO tomes la identificación de la cabecera superior ni NITs.",
           "empresa_cliente": "Nombre de la empresa",
           "tipo_examen": "Tipo de evaluación",
-          "fecha_examen": "Fecha de atención en formato YYYY-MM-DD",
-          "concepto_aptitud": "Copia TODO el texto que aparece después de los dos puntos (:) en la línea del concepto. Ignora la etiqueta inicial.",
-          "observaciones": "REGLA ESTRICTA: Extrae TODO el texto ubicado físicamente entre 'OBSERVACIONES AL CONCEPTO:' y 'ENFASIS'.",
+          "fecha_examen": "Fecha de atención OBLIGATORIAMENTE en formato DD-MM-YYYY (ej: 16-09-2026).",
+          "concepto_aptitud": "Copia TODO el texto que aparece después de los dos puntos (:) en la línea del concepto. Ignora la etiqueta inicial. Transcríbelo en minúsculas.",
+          "observaciones": "REGLA ESTRICTA: Extrae TODO el texto ubicado físicamente entre 'OBSERVACIONES AL CONCEPTO:' y 'ENFASIS'. Transcríbelo en minúsculas.",
           "enfasis": "Especialidad médica limpia (ej: osteomuscular).",
           "limitaciones": "Limitaciones indicadas en minúsculas. Si no hay, pon 'ninguna'.",
           "ips_prestador": "Nombre de la IPS prestadora",
           "pruebas_apoyo": "Pruebas diagnósticas realizadas",
-          "recomendaciones_medicas": "ESCANEO MULTICOLUMNA OBLIGATORIO: Ubica la sección 'RECOMENDACIONES' -> '» GENERALES'. Los ítems están distribuidos horizontalmente a lo ancho de la página. Debes escanear la imagen de extrema izquierda a extrema derecha. Extrae TODOS los textos que tengan una casilla negra marcada (☑) a su lado. PROHIBIDO detenerse en la primera columna; debes recorrer toda la fila hasta el margen derecho. Sepáralos por comas."
+          "recomendaciones_medicas": "ESCANEO MULTICOLUMNA OBLIGATORIO: Ubica la sección 'RECOMENDACIONES' -> '» GENERALES'. Los ítems están distribuidos horizontalmente a lo ancho de la página. Debes escanear la imagen de extrema izquierda a extrema derecha. Extrae TODOS los textos que tengan una casilla negra marcada (☑) a su lado. PROHIBIDO detenerse en la primera columna; debes recorrer toda la fila hasta el margen derecho. Sepáralos por comas. Todo en minúsculas."
         }
         """
 
@@ -116,14 +116,33 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if "tipo_examen" in datos_extraidos and isinstance(datos_extraidos["tipo_examen"], str):
             datos_extraidos["tipo_examen"] = datos_extraidos["tipo_examen"].upper()
 
-        # 2. Limpiar prefijos basura en Concepto Aptitud
+        # 2. Formatear Nombre a Nombre Propio (Ej: Andrea Esmeralda Tosta Manzo)
+        if "nombre_empleado" in datos_extraidos and isinstance(datos_extraidos["nombre_empleado"], str):
+            datos_extraidos["nombre_empleado"] = datos_extraidos["nombre_empleado"].title()
+
+        # 3. Forzar Minúsculas en Concepto, Observaciones y Recomendaciones
         if "concepto_aptitud" in datos_extraidos and isinstance(datos_extraidos["concepto_aptitud"], str):
             concepto = datos_extraidos["concepto_aptitud"]
-            # Detecta y borra frases como "CONCEPTO - EXAMEN PERIODICO:" o "EXAMEN PREINGRESO:"
             concepto = re.sub(r'^(?:CONCEPTO\s*[-–]?\s*)?EXAMEN\s+[A-Z]+\s*:\s*', '', concepto, flags=re.IGNORECASE)
-            datos_extraidos["concepto_aptitud"] = concepto.strip()
+            datos_extraidos["concepto_aptitud"] = concepto.strip().lower()
 
-        # 3. Respaldo de Identificación enfocado SOLO en la sección correcta
+        if "observaciones" in datos_extraidos and isinstance(datos_extraidos["observaciones"], str):
+            datos_extraidos["observaciones"] = datos_extraidos["observaciones"].strip().lower()
+            
+        if "recomendaciones_medicas" in datos_extraidos and isinstance(datos_extraidos["recomendaciones_medicas"], str):
+            datos_extraidos["recomendaciones_medicas"] = datos_extraidos["recomendaciones_medicas"].strip().lower()
+
+        # 4. Formateo estricto de Fecha a DD-MM-YYYY
+        if "fecha_examen" in datos_extraidos and isinstance(datos_extraidos["fecha_examen"], str):
+            fecha_cruda = datos_extraidos["fecha_examen"].replace("/", "-").strip()
+            # Si la IA comete el error de enviarla como YYYY-MM-DD, Python la voltea automáticamente
+            match_yyyy = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", fecha_cruda)
+            if match_yyyy:
+                datos_extraidos["fecha_examen"] = f"{match_yyyy.group(3)}-{match_yyyy.group(2)}-{match_yyyy.group(1)}"
+            else:
+                datos_extraidos["fecha_examen"] = fecha_cruda
+
+        # 5. Respaldo de Identificación enfocado SOLO en la sección correcta
         match_cedula_paciente = re.search(r"DATOS DEL PACIENTE.*?IDENTIFICACI[OÓ]N:[\s\n]*(?:CC|CE|TI|NIT|PP)?[\-\.\s]*(\d{5,15})", texto_pdf_nativo, re.IGNORECASE | re.DOTALL)
         
         cedulas_doctores = ["1013609058", "46672834", "46072854", "4607285", "101360905", "1032363717", "554771", "52270442", "830015429", "860006314"]
@@ -132,7 +151,6 @@ async def procesar_examen(request: Request, file: UploadFile = None):
             cedula_encontrada = match_cedula_paciente.group(1).strip()
             if cedula_encontrada not in cedulas_doctores:
                 num_ia = str(datos_extraidos.get("numero_documento", ""))
-                # Si la IA omitió dígitos o difiere del texto digital exacto, sobreescribe
                 if len(num_ia) < len(cedula_encontrada) or num_ia != cedula_encontrada:
                     datos_extraidos["numero_documento"] = cedula_encontrada
 
@@ -152,4 +170,4 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Extractor GPT-4o Reglas Limpieza v15.0"}
+    return {"status": "online", "system": "Extractor GPT-4o Reglas Limpieza v16.0"}

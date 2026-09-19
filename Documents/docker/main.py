@@ -4,13 +4,29 @@ import json
 import re
 import traceback
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-import pymupdf as fitz  
-from PIL import Image
+import fitz  # PyMuPDF
+from pydantic import BaseModel
 from openai import OpenAI
 
-app = FastAPI(title="SGSST PDF Extractor Literal", version="16.0")
+app = FastAPI(title="SGSST PDF Extractor Estructurado", version="17.0")
 
 client = OpenAI()
+
+# 1. Definimos el esquema estricto usando Pydantic (Structured Outputs)
+class CertificadoMedico(BaseModel):
+    nombre_empleado: str
+    tipo_documento: str
+    numero_documento: str
+    empresa_cliente: str
+    tipo_examen: str
+    fecha_examen: str
+    concepto_aptitud: str
+    observaciones: str
+    enfasis: str
+    limitaciones: str
+    ips_prestador: str
+    pruebas_apoyo: str
+    recomendaciones_medicas: str
 
 @app.post("/api/procesar-examen/")
 async def procesar_examen(request: Request, file: UploadFile = None):
@@ -39,6 +55,7 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if not pdf_bytes or len(pdf_bytes) == 0:
             raise HTTPException(status_code=400, detail="El contenido del archivo PDF está vacío.")
 
+        # 2. Extracción Híbrida: Sacamos el texto nativo para ayudar al LLM
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         texto_pdf_nativo = ""
         for pagina_doc in doc:
@@ -55,72 +72,57 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         with open(img_path, "rb") as image_file:
             base64_image = base64.b64encode(image_file.read()).decode('utf-8')
 
-        # Prompt ajustado con los nuevos formatos solicitados
         prompt_sistema = """
-        Eres un transcriptor de datos OCR literal de altísima precisión. No interpretas ni resumes. Transcribe los campos del certificado respetando estas reglas espaciales restrictivas:
-        Devuelve ÚNICAMENTE un JSON válido con estas llaves:
-        {
-          "nombre_empleado": "Nombre completo del trabajador. Formato Título (Ej: Juan Perez Gomez).",
-          "tipo_documento": "CC o CE",
-          "numero_documento": "Busca ESTRICTAMENTE en la sección 'DATOS DEL PACIENTE' junto a la etiqueta 'IDENTIFICACIÓN:'. Extrae todos los dígitos exactos. NO tomes la identificación de la cabecera superior ni NITs.",
-          "empresa_cliente": "Nombre de la empresa",
-          "tipo_examen": "Tipo de evaluación",
-          "fecha_examen": "Fecha de atención OBLIGATORIAMENTE en formato DD-MM-YYYY (ej: 16-09-2026).",
-          "concepto_aptitud": "Copia TODO el texto que aparece después de los dos puntos (:) en la línea del concepto. Ignora la etiqueta inicial. Transcríbelo en minúsculas.",
-          "observaciones": "REGLA ESTRICTA: Extrae TODO el texto ubicado físicamente entre 'OBSERVACIONES AL CONCEPTO:' y 'ENFASIS'. Transcríbelo en minúsculas.",
-          "enfasis": "Especialidad médica limpia (ej: osteomuscular).",
-          "limitaciones": "Limitaciones indicadas en minúsculas. Si no hay, pon 'ninguna'.",
-          "ips_prestador": "Nombre de la IPS prestadora",
-          "pruebas_apoyo": "Pruebas diagnósticas realizadas",
-          "recomendaciones_medicas": "ESCANEO MULTICOLUMNA OBLIGATORIO: Ubica la sección 'RECOMENDACIONES' -> '» GENERALES'. Los ítems están distribuidos horizontalmente a lo ancho de la página. Debes escanear la imagen de extrema izquierda a extrema derecha. Extrae TODOS los textos que tengan una casilla negra marcada (☑) a su lado. PROHIBIDO detenerse en la primera columna; debes recorrer toda la fila hasta el margen derecho. Sepáralos por comas. Todo en minúsculas."
-        }
+        Eres un transcriptor de datos OCR literal de altísima precisión. No interpretas ni resumes.
+        REGLA ESTRICTA PARA RECOMENDACIONES: El documento tiene un formato multicolumna. Para evitar perder datos, apóyate en el texto extraído nativamente que se te proporciona. Extrae TODOS los textos que tengan una casilla negra marcada (☑) a su lado. Sepáralos por comas. Todo en minúsculas.
         """
 
-        response = client.chat.completions.create(
-            model="gpt-4o",
+        # 3. Llamada a la API usando el método 'parse' para forzar la salida estructurada
+        response = client.beta.chat.completions.parse(
+            model="gpt-4o-2024-08-06", # Modelo óptimo para Structured Outputs
             messages=[
+                {
+                    "role": "system",
+                    "content": prompt_sistema
+                },
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": prompt_sistema},
+                        # Le pasamos la imagen de alta calidad
                         {
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/png;base64,{base64_image}"
                             }
+                        },
+                        # Le pasamos el texto nativo extraído por PyMuPDF como "muleta" espacial
+                        {
+                            "type": "text",
+                            "text": f"--- INICIO TEXTO NATIVO DE APOYO ---\n{texto_pdf_nativo}\n--- FIN TEXTO NATIVO ---\nUtiliza este texto para verificar que no saltaste ninguna columna en las recomendaciones."
                         }
                     ]
                 }
             ],
-            max_tokens=1000,
+            response_format=CertificadoMedico,
             temperature=0.0
         )
 
-        contenido_respuesta = response.choices[0].message.content.strip()
-        if contenido_respuesta.startswith("```"):
-            contenido_respuesta = contenido_respuesta.split("```")[1]
-            if contenido_respuesta.startswith("json"):
-                contenido_respuesta = contenido_respuesta[4:]
-        contenido_respuesta = contenido_respuesta.strip()
-
-        datos_extraidos = json.loads(contenido_respuesta)
+        # 4. Volcamos la respuesta validada a un diccionario de Python (sin hacer json.loads)
+        datos_extraidos = response.choices[0].message.parsed.model_dump()
 
         # ---------------------------------------------------------
         # LIMPIEZA DETERMINISTA CON PYTHON (Filtros de Formato)
         # ---------------------------------------------------------
 
-        # 1. Imponer mayúsculas en Empresa y Tipo de Examen
         if "empresa_cliente" in datos_extraidos and isinstance(datos_extraidos["empresa_cliente"], str):
             datos_extraidos["empresa_cliente"] = datos_extraidos["empresa_cliente"].upper()
             
         if "tipo_examen" in datos_extraidos and isinstance(datos_extraidos["tipo_examen"], str):
             datos_extraidos["tipo_examen"] = datos_extraidos["tipo_examen"].upper()
 
-        # 2. Formatear Nombre a Nombre Propio (Ej: Andrea Esmeralda Tosta Manzo)
         if "nombre_empleado" in datos_extraidos and isinstance(datos_extraidos["nombre_empleado"], str):
             datos_extraidos["nombre_empleado"] = datos_extraidos["nombre_empleado"].title()
 
-        # 3. Forzar Minúsculas en Concepto, Observaciones y Recomendaciones
         if "concepto_aptitud" in datos_extraidos and isinstance(datos_extraidos["concepto_aptitud"], str):
             concepto = datos_extraidos["concepto_aptitud"]
             concepto = re.sub(r'^(?:CONCEPTO\s*[-–]?\s*)?EXAMEN\s+[A-Z]+\s*:\s*', '', concepto, flags=re.IGNORECASE)
@@ -132,19 +134,16 @@ async def procesar_examen(request: Request, file: UploadFile = None):
         if "recomendaciones_medicas" in datos_extraidos and isinstance(datos_extraidos["recomendaciones_medicas"], str):
             datos_extraidos["recomendaciones_medicas"] = datos_extraidos["recomendaciones_medicas"].strip().lower()
 
-        # 4. Formateo estricto de Fecha a DD-MM-YYYY
         if "fecha_examen" in datos_extraidos and isinstance(datos_extraidos["fecha_examen"], str):
             fecha_cruda = datos_extraidos["fecha_examen"].replace("/", "-").strip()
-            # Si la IA comete el error de enviarla como YYYY-MM-DD, Python la voltea automáticamente
             match_yyyy = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", fecha_cruda)
             if match_yyyy:
                 datos_extraidos["fecha_examen"] = f"{match_yyyy.group(3)}-{match_yyyy.group(2)}-{match_yyyy.group(1)}"
             else:
                 datos_extraidos["fecha_examen"] = fecha_cruda
 
-        # 5. Respaldo de Identificación enfocado SOLO en la sección correcta
+        # Respaldo de Identificación (Tu regex sigue siendo el mecanismo más seguro)
         match_cedula_paciente = re.search(r"DATOS DEL PACIENTE.*?IDENTIFICACI[OÓ]N:[\s\n]*(?:CC|CE|TI|NIT|PP)?[\-\.\s]*(\d{5,15})", texto_pdf_nativo, re.IGNORECASE | re.DOTALL)
-        
         cedulas_doctores = ["1013609058", "46672834", "46072854", "4607285", "101360905", "1032363717", "554771", "52270442", "830015429", "860006314"]
 
         if match_cedula_paciente:
@@ -170,4 +169,4 @@ async def procesar_examen(request: Request, file: UploadFile = None):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "system": "Extractor GPT-4o Reglas Limpieza v16.0"}
+    return {"status": "online", "system": "Extractor Estructurado Híbrido v17.0"}
